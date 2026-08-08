@@ -1,24 +1,27 @@
 import React from 'react';
 import { StatusBar } from 'react-native';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { EventProvider } from './src/context/EventContext';
+import { AuthProvider } from './src/context/AuthContext';
 import { RootNavigator } from './src/navigation/RootNavigator';
 import { COLORS } from './src/constants/design';
 
 /**
- * メインアプリケーション
- * イベント検索・ナビゲーション・評価機能を統合
+ * SPAJAM 2026 メインアプリケーション
  */
 export default function App() {
   return (
-    <>
+    <SafeAreaProvider>
       <StatusBar
         barStyle="dark-content"
-        backgroundColor={COLORS.background.primary}
-        translucent={false}
+        backgroundColor={COLORS.canvas}
+        translucent={true}
       />
-      <EventProvider>
-        <RootNavigator />
-      </EventProvider>
-    </>
+      <AuthProvider>
+        <EventProvider>
+          <RootNavigator />
+        </EventProvider>
+      </AuthProvider>
+    </SafeAreaProvider>
   );
 }
