@@ -1,50 +1,70 @@
 # API-REQUIREMENTS.md
 
-LED QUATTRO フロントエンド → バックエンド API仕様書
+# LED QUATTRO フロントエンド → バックエンド 全統合 API仕様書
 
-**作成日**: 2026-08-08  
+**最終更新**: 2026-08-08  
 **対象**: SPAJAM 2026 LED Quattro プロジェクト  
-**フロントエンド**: React Native + Expo
+**フロントエンド**: React Native + Expo (iOS / Android / Web)  
+**ドキュメント概要**: バックエンド担当者が本ドキュメント1枚を参照するだけで、フロントエンドに必要な全APIエンドポイント、データ構造、認証、および最新UI要件変更点を完全に把握できる仕様書です。
 
 ---
 
-## 概要
+## 📌 直近のUI変更に伴う要件訂正（重要）
 
-フロントエンド（React Native）が必要とするバックエンド API エンドポイント一覧。
-イベント検索→ナビゲーション→レビュー投稿 の3画面フローに対応したデータ構造。
+バックエンド担当者様は、以下の**フロントエンド仕様変更・削除項目**に留意して開発を行ってください。
+
+| 項目 | 以前の仕様 | 最新の仕様（変更後） | バックエンド影響 |
+|---|---|---|---|
+| **イベントカード** | 「現地でイベント判明！」赤バッジ表示 | 赤バッジ廃止。開催場所周辺の**地図 (MapView)** を表示 | イベントオブジェクトの **`coordinates` (latitude/longitude)** が**必須化** |
+| **カード評価** | 星評価数値 (`rating`: 4.5等) の表示 | **星評価数値 (rating) を削除・廃止** | イベント取得レスポンスにおける **`rating` カラムの返却は不要** |
+| **検索フォーム** | キーワード検索バーでイベント絞り込み | **検索フォームを削除** | キーワード検索 `q` パラメータは**不要**（一覧取得 `GET /api/events`） |
+| **引っ張り更新** | なし | 画面上部を下スワイプ（**Pull-to-Refresh**）で最新一覧リロード | **`GET /api/events`** がリロード毎に呼び出されるため高速応答が推奨 |
+| **初回ログイン** | 常にイベント一覧を表示 | **初回ログイン直後のみチュートリアル（ガイド）を自動表示** | `user` オブジェクトに **`isFirstLogin: boolean`**（または `hasSeenTutorial: boolean`）の返却を推奨 |
+| **満足度記録** | 満足度(星) ＋ **体験ログ・メモ(テキスト)** | **体験ログ・メモを削除** (星評価のみ) | `POST /api/reviews` の **`comment` フィールドは不要化** |
+| **ドキュメント** | `API-REQUIREMENTS-LOGIN.md` 別途参照 | **本ドキュメント1枚に完全統合** | `API-REQUIREMENTS-LOGIN.md` の閲覧・参照は不要 |
 
 ---
 
-## ベースURL
+## 1. 共通仕様・認証方式
 
-```
-http://localhost:8080
-```
-
-本番環境では環境変数 `EXPO_PUBLIC_API_URL` で指定。
+- **ベースURL**: `http://localhost:8080` （環境変数 `EXPO_PUBLIC_API_URL` で設定）
+- **データ形式**: `application/json`
+- **認証方式**: JWT (JSON Web Token) Bearer 認証
+  - ログイン/新規登録成功時に返却される `token` (AccessToken) を HTTP ヘッダーに付与。
+  - Header 形式: `Authorization: Bearer <AccessToken>`
 
 ---
 
-## 1. イベント検索 API
+## 2. API エンドポイント一覧
 
-### エンドポイント
+| 機能 | メソッド | エンドポイント | 認証 | 概要 |
+|---|---|---|---|---|
+| **イベント一覧取得** | `GET` | `/api/events` | 不要 | イベント一覧取得（初回ロード ＆ 引っ張り更新リロード共用） |
+| **イベント詳細取得** | `GET` | `/api/events/{eventId}` | 不要 | イベント詳細情報取得 |
+| **満足度記録投稿** | `POST` | `/api/reviews` | 必要 | 星5段階評価（1〜5）の記録 |
+| **ログイン** | `POST` | `/api/auth/login` | 不要 | メールアドレス・パスワード認証 |
+| **新規ユーザー登録** | `POST` | `/api/auth/register` | 不要 | 新規アカウント作成 |
+| **ユーザー情報・マイページ** | `GET` | `/api/auth/me` | 必要 | プロフィール ＆ 参加イベント一覧取得 |
+| **ログアウト** | `POST` | `/api/auth/logout` | 必要 | トークン/セッションの無効化 |
+| **ヘルスチェック** | `GET` | `/health` | 不要 | サーバー稼働状態の確認 |
+| **ダミーデータリセット** | `POST` | `/api/dev/reset` | 不要 | テスト用初期データリセット（開発環境専用） |
 
-```
-GET /api/events/search?q={query}
-```
+---
 
-### リクエスト
+## 3. エンドポイント詳細仕様
 
-| パラメータ | 型     | 必須 | 説明                  |
-|-----------|--------|------|-------------------|
-| q         | string | ○   | 検索キーワード（イベント名・場所等） |
-| limit     | number | ×   | 取得件数（デフォルト: 20） |
-| offset    | number | ×   | オフセット（ページネーション） |
+### 3.1. イベント一覧取得 API (`GET /api/events`)
 
-### レスポンス
+トップページのイベントカード一覧で使用します。  
+※初回画面読み込み時および**画面一番上を下にスワイプ（Pull-to-Refresh）した際のリロード**時に呼び出されます。最新のイベント一覧データ（各イベントの緯度経度座標 `coordinates` を含む）を高速に返却してください。
 
-**ステータス: 200 OK**
+#### リクエストパラメータ（任意・オプション）
+| パラメータ | 型 | 必須 | 説明 |
+|---|---|---|---|
+| `limit` | `number` | No | 取得件数（デフォルト: 20） |
+| `offset` | `number` | No | ページネーションオフセット |
 
+#### レスポンス (200 OK)
 ```json
 {
   "status": "success",
@@ -53,13 +73,14 @@ GET /api/events/search?q={query}
       {
         "id": "1",
         "name": "SPAJAM 2026 オープニングセレモニー",
+        "spotName": "渋谷・特設屋外ステージエリア",
         "date": "2026/08/08",
         "time": "09:00-09:30",
-        "location": "東京都渋谷区",
+        "duration": "約30分",
+        "cost": "無料",
+        "location": "東京都渋谷区神南1-1",
         "distance": "1.2 km",
-        "imageUri": "https://example.com/images/event-1.jpg",
-        "rating": 4.5,
-        "description": "SPAJAMのオープニングセレモニーです。全参加者が集まります。",
+        "description": "熱気あふれるオープニングセッションが開催されているおすすめのスポットです。",
         "coordinates": {
           "latitude": 35.6595,
           "longitude": 139.7004
@@ -68,74 +89,50 @@ GET /api/events/search?q={query}
       {
         "id": "2",
         "name": "React Native ワークショップ",
+        "spotName": "渋谷・クリエイティブ体験スペース",
         "date": "2026/08/08",
         "time": "10:00-11:30",
-        "location": "東京都渋谷区（ワークショップ会場A）",
+        "duration": "約90分",
+        "cost": "1,000円",
+        "location": "東京都渋谷区道玄坂2-2",
         "distance": "2.1 km",
-        "imageUri": "https://example.com/images/event-2.jpg",
-        "rating": 4.2,
-        "description": "React Nativeを使ったモバイル開発の基礎をお学びいただけます。",
+        "description": "最新テクノロジーのハンズオン体験が楽しめる人気スポットです。",
         "coordinates": {
           "latitude": 35.6612,
           "longitude": 139.7017
         }
       }
     ],
-    "total": 10,
+    "total": 2,
     "limit": 20,
     "offset": 0
   }
 }
 ```
 
-### エラーレスポンス
-
-**ステータス: 400 Bad Request**
-
-```json
-{
-  "status": "error",
-  "error": {
-    "code": "INVALID_QUERY",
-    "message": "検索キーワードが入力されていません"
-  }
-}
-```
-
 ---
 
-## 2. イベント詳細 API
+### 3.2. イベント詳細取得 API (`GET /api/events/{eventId}`)
 
-### エンドポイント
+#### パスパラメータ
+- `eventId` (`string`, 必須): イベントID
 
-```
-GET /api/events/{eventId}
-```
-
-### リクエスト
-
-| パラメータ | 型     | 必須 | 説明           |
-|-----------|--------|------|--------------|
-| eventId   | string | ○   | パスパラメータ |
-
-### レスポンス
-
-**ステータス: 200 OK**
-
+#### レスポンス (200 OK)
 ```json
 {
   "status": "success",
   "data": {
     "id": "1",
     "name": "SPAJAM 2026 オープニングセレモニー",
+    "spotName": "渋谷・特設屋外ステージエリア",
     "date": "2026/08/08",
     "time": "09:00-09:30",
-    "location": "東京都渋谷区",
-    "imageUri": "https://example.com/images/event-1.jpg",
-    "rating": 4.5,
-    "reviewCount": 127,
+    "duration": "約30分",
+    "cost": "無料",
+    "location": "東京都渋谷区神南1-1",
+    "distance": "1.2 km",
     "description": "SPAJAMのオープニングセレモニーです。全参加者が集まります。",
-    "detailedDescription": "このセレモニーでは、主催者からのウェルカムスピーチと...（省略）",
+    "detailedDescription": "このセレモニーでは、主催者からのウェルカムスピーチとオリエンテーションが行われます。",
     "coordinates": {
       "latitude": 35.6595,
       "longitude": 139.7004
@@ -149,141 +146,208 @@ GET /api/events/{eventId}
 }
 ```
 
-### エラーレスポンス
-
-**ステータス: 404 Not Found**
-
-```json
-{
-  "status": "error",
-  "error": {
-    "code": "EVENT_NOT_FOUND",
-    "message": "指定されたイベントが見つかりません"
-  }
-}
-```
-
 ---
 
-## 3. レビュー投稿 API
+### 3.3. 満足度記録投稿 API (`POST /api/reviews`)
 
-### エンドポイント
+※ UI変更により**「体験ログ・メモ（テキスト）」は削除**されました。満足度（1〜5の数値）のみを送信・記録します。
 
+#### リクエストヘッダー
+```http
+Authorization: Bearer <AccessToken>
 ```
-POST /api/reviews
-```
 
-### リクエストボディ
-
+#### リクエストボディ
 ```json
 {
   "eventId": "1",
-  "rating": 5,
-  "comment": "素晴らしいイベントでした！",
-  "userId": "user-123"
+  "rating": 5
 }
 ```
 
-| フィールド | 型     | 必須 | 説明                     |
-|-----------|--------|------|------------------------|
-| eventId   | string | ○   | イベントID              |
-| rating    | number | ○   | 5段階評価（1-5）         |
-| comment   | string | ×   | レビューコメント（最大500文字） |
-| userId    | string | ○   | ユーザーID              |
+| フィールド | 型 | 必須 | 説明 |
+|---|---|---|---|
+| `eventId` | `string` | Yes | 対象イベントID |
+| `rating` | `number` | Yes | 満足度評価（1〜5の整数数値） |
 
-### レスポンス
-
-**ステータス: 201 Created**
-
+#### レスポンス (201 Created)
 ```json
 {
   "status": "success",
   "data": {
     "reviewId": "review-456",
     "eventId": "1",
-    "userId": "user-123",
+    "userId": "usr_123456",
     "rating": 5,
-    "comment": "素晴らしいイベントでした！",
-    "createdAt": "2026-08-08T14:30:00Z",
-    "updatedAt": "2026-08-08T14:30:00Z"
-  }
-}
-```
-
-### エラーレスポンス
-
-**ステータス: 400 Bad Request**
-
-```json
-{
-  "status": "error",
-  "error": {
-    "code": "INVALID_RATING",
-    "message": "評価は1〜5の整数である必要があります"
-  }
-}
-```
-
-**ステータス: 409 Conflict**
-
-```json
-{
-  "status": "error",
-  "error": {
-    "code": "DUPLICATE_REVIEW",
-    "message": "このユーザーはすでにこのイベントをレビュー済みです"
+    "createdAt": "2026-08-08T14:30:00Z"
   }
 }
 ```
 
 ---
 
-## 4. ユーザー認証・ユーザー情報 API（オプション・検討中）
+### 3.4. ログイン API (`POST /api/auth/login`)
 
-### エンドポイント
-
+#### リクエストボディ
+```json
+{
+  "email": "user@example.com",
+  "password": "Password123!"
+}
 ```
-POST /api/auth/login
-GET /api/users/me
-```
 
-**仕様は後で協議予定**
+#### レスポンス (200 OK)
+```json
+{
+  "status": "success",
+  "data": {
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "user": {
+      "id": "usr_123456",
+      "name": "山田 太郎",
+      "email": "user@example.com",
+      "avatarUrl": "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400",
+      "isFirstLogin": false,
+      "visitedEvents": [
+        {
+          "id": "visited_1",
+          "eventName": "SPAJAM 2026 予選ハッカソン",
+          "visitedDate": "2026年8月2日",
+          "rating": 5
+        }
+      ]
+    }
+  }
+}
+```
 
 ---
 
-## 5. データベーススキーマ提案
+### 3.5. 新規ユーザー登録 API (`POST /api/auth/register`)
 
-### events テーブル
+#### リクエストボディ
+```json
+{
+  "name": "山田 太郎",
+  "email": "user@example.com",
+  "password": "Password123!"
+}
+```
 
+#### レスポンス (201 Created)
+```json
+{
+  "status": "success",
+  "data": {
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "user": {
+      "id": "usr_789012",
+      "name": "山田 太郎",
+      "email": "user@example.com",
+      "avatarUrl": null,
+      "isFirstLogin": true,
+      "visitedEvents": []
+    }
+  }
+}
+```
+
+---
+
+### 3.6. マイページ/ユーザー情報取得 API (`GET /api/auth/me`)
+
+#### リクエストヘッダー
+```http
+Authorization: Bearer <AccessToken>
+```
+
+#### レスポンス (200 OK)
+```json
+{
+  "status": "success",
+  "data": {
+    "user": {
+      "id": "usr_123456",
+      "name": "山田 太郎",
+      "email": "user@example.com",
+      "avatarUrl": "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400",
+      "isFirstLogin": false,
+      "visitedEvents": [
+        {
+          "id": "visited_1",
+          "eventName": "SPAJAM 2026 予選ハッカソン",
+          "visitedDate": "2026年8月2日",
+          "rating": 5
+        }
+      ]
+    }
+  }
+}
+```
+
+---
+
+### 3.7. ログアウト API (`POST /api/auth/logout`)
+
+#### レスポンス (200 OK)
+```json
+{
+  "status": "success",
+  "data": {
+    "message": "ログアウトしました。"
+  }
+}
+```
+
+---
+
+## 4. データベーススキーマ定義 (SQL)
+
+最新のフロントエンド仕様（メモテキスト削除・座標必須化・rating不要化・初回ログインチュートリアル判定）を考慮した最適化スキーマ提案です。
+
+### `users` テーブル
 ```sql
-CREATE TABLE events (
+CREATE TABLE users (
   id VARCHAR(50) PRIMARY KEY,
-  name VARCHAR(255) NOT NULL,
-  date VARCHAR(20) NOT NULL,
-  time VARCHAR(20) NOT NULL,
-  location VARCHAR(255) NOT NULL,
-  description TEXT,
-  detailed_description TEXT,
-  image_uri VARCHAR(500),
-  rating DECIMAL(3, 1) DEFAULT 0.0,
-  review_count INT DEFAULT 0,
-  latitude DECIMAL(10, 8),
-  longitude DECIMAL(11, 8),
-  organizer_id VARCHAR(50),
+  name VARCHAR(100) NOT NULL,
+  email VARCHAR(100) UNIQUE NOT NULL,
+  password_hash VARCHAR(255) NOT NULL,
+  avatar_url VARCHAR(500),
+  is_first_login BOOLEAN DEFAULT TRUE,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
 ```
 
-### reviews テーブル
+### `events` テーブル
+```sql
+CREATE TABLE events (
+  id VARCHAR(50) PRIMARY KEY,
+  name VARCHAR(255) NOT NULL,
+  spot_name VARCHAR(255),
+  date VARCHAR(20) NOT NULL,
+  time VARCHAR(20) NOT NULL,
+  duration VARCHAR(50),
+  cost VARCHAR(50),
+  location VARCHAR(255) NOT NULL,
+  distance VARCHAR(50),
+  image_uri VARCHAR(500),
+  description TEXT,
+  detailed_description TEXT,
+  latitude DECIMAL(10, 8) NOT NULL,  -- マップ表示・GPS到着判定に必須
+  longitude DECIMAL(11, 8) NOT NULL, -- マップ表示・GPS到着判定に必須
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+```
 
+### `reviews` テーブル (満足度評価)
 ```sql
 CREATE TABLE reviews (
   id VARCHAR(50) PRIMARY KEY,
   event_id VARCHAR(50) NOT NULL,
   user_id VARCHAR(50) NOT NULL,
   rating INT NOT NULL CHECK (rating >= 1 AND rating <= 5),
-  comment TEXT,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   FOREIGN KEY (event_id) REFERENCES events(id),
@@ -292,158 +356,36 @@ CREATE TABLE reviews (
 );
 ```
 
-### users テーブル
-
-```sql
-CREATE TABLE users (
-  id VARCHAR(50) PRIMARY KEY,
-  username VARCHAR(100) UNIQUE NOT NULL,
-  email VARCHAR(100) UNIQUE NOT NULL,
-  password_hash VARCHAR(255),
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-);
-```
-
-### event_tags テーブル
-
-```sql
-CREATE TABLE event_tags (
-  id INT AUTO_INCREMENT PRIMARY KEY,
-  event_id VARCHAR(50) NOT NULL,
-  tag VARCHAR(100) NOT NULL,
-  FOREIGN KEY (event_id) REFERENCES events(id),
-  UNIQUE KEY unique_event_tag (event_id, tag)
-);
-```
-
 ---
 
-## 6. 実装上の注意事項
+## 5. エラーレスポンス構造 & 共通エラーコード
 
-### GPS位置情報による到着判定
-
-**フロントエンド側**:
-- `expo-location` でユーザーの現在地を取得
-- イベント座標との距離を Haversine 公式で計算
-- **100m以内** で「到着」と判定
-
-**バックエンド側**:
-- イベントの座標（latitude, longitude）を正確に登録
-- 複数のイベント会場がある場合は、各会場の座標を登録
-
-### レーティング計算
-
-```
-平均評価 = Σ(rating) / COUNT(reviews)
-```
-
-定期的に `events.rating` を更新する。
-
-### デバッグ用ダミーイベントデータ
-
-以下のイベントをDB初期化時に自動挿入すると、テスト・開発が容易:
-
-```sql
-INSERT INTO events (id, name, date, time, location, latitude, longitude, description) VALUES
-('1', 'SPAJAM 2026 オープニングセレモニー', '2026/08/08', '09:00-09:30', '東京都渋谷区', 35.6595, 139.7004, '...'),
-('2', 'React Native ワークショップ', '2026/08/08', '10:00-11:30', '東京都渋谷区（ワークショップ会場A）', 35.6612, 139.7017, '...'),
-...
-```
-
----
-
-## 7. エラーハンドリング
-
-### 共通エラーコード
-
-| コード | ステータス | 説明 |
-|------|---------|------|
-| INTERNAL_SERVER_ERROR | 500 | サーバーエラー |
-| INVALID_REQUEST | 400 | リクエスト形式が不正 |
-| NOT_FOUND | 404 | リソースが見つからない |
-| UNAUTHORIZED | 401 | 認証が必要 |
-| FORBIDDEN | 403 | アクセス権限がない |
-| CONFLICT | 409 | リソースの競合 |
-
-### レスポンス形式（エラー時）
-
+### エラーレスポンス形式
 ```json
 {
   "status": "error",
   "error": {
     "code": "ERROR_CODE",
-    "message": "エラーの詳細説明",
-    "details": {}
+    "message": "ユーザー向け表示メッセージ"
   }
 }
 ```
 
----
-
-## 8. レート制限・パフォーマンス
-
-### 推奨設定
-
-- API リクエスト制限: **100リクエスト/分 (IP単位)**
-- レスポンスタイムアウト: **10秒**
-- 検索結果の最大件数: **100件**
-
-### キャッシング
-
-- イベント情報: **5分間キャッシュ**
-- 検索結果: **2分間キャッシュ**
-- ユーザー情報: **セッション中キャッシュ**
+### エラーコード一覧
+| エラーコード | HTTPステータス | 説明 |
+|---|---|---|
+| `AUTH_INVALID_CREDENTIALS` | 401 | メールアドレスまたはパスワードが正しくありません |
+| `AUTH_EMAIL_ALREADY_EXISTS` | 409 | 指定されたメールアドレスは既に登録されています |
+| `AUTH_UNAUTHORIZED` | 401 | 認証トークンが無効または未送信です |
+| `AUTH_TOKEN_EXPIRED` | 401 | トークンの有効期限が切れています |
+| `EVENT_NOT_FOUND` | 404 | 指定されたイベントが存在しません |
+| `DUPLICATE_REVIEW` | 409 | すでにこのイベントの満足度を記録済みです |
+| `VALIDATION_ERROR` | 400 | 入力データ形式エラー |
+| `INTERNAL_SERVER_ERROR` | 500 | サーバー内部エラー |
 
 ---
 
-## 9. テスト用エンドポイント
+## 6. 旧仕様ドキュメントの取扱いについて
 
-### ヘルスチェック
-
-```
-GET /health
-```
-
-レスポンス:
-
-```json
-{
-  "status": "ok",
-  "timestamp": "2026-08-08T14:30:00Z",
-  "version": "1.0.0"
-}
-```
-
-### ダミーデータリセット
-
-```
-POST /api/dev/reset
-```
-
-（開発環境のみ使用可能）
-
----
-
-## 10. 実装予定
-
-| 機能 | 優先度 | 実装予定時期 |
-|------|--------|----------|
-| イベント検索・一覧 | 🔴 高 | Week 1 |
-| イベント詳細取得 | 🔴 高 | Week 1 |
-| レビュー投稿 | 🟠 中 | Week 1 |
-| ユーザー認証 | 🟡 低 | Week 2（オプション） |
-| GPS連携テスト用エンドポイント | 🟠 中 | Week 1 |
-
----
-
-## 11. 質問・お問い合わせ
-
-フロントエンド実装時に不明な点や追加要件がありましたら、プロジェクトSlackチャネルに連絡してください。
-
-**連絡先**: frontendチャネル or ユーザー名: [@frontend-lead]
-
----
-
-**ドキュメント作成者**: フロントエンドチーム  
-**最終更新**: 2026-08-08
+- `API-REQUIREMENTS-LOGIN.md` は本ドキュメント `API-REQUIREMENTS.md` に完全統合されました。
+- バックエンド担当開発者様は **本ドキュメント `API-REQUIREMENTS.md` のみを閲覧・参照** して実装を進めてください。

@@ -9,10 +9,10 @@ import {
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import ScreenContainer from '../components/ScreenContainer';
 import StarRating from '../components/StarRating';
-import TextInputField from '../components/TextInputField';
 import GradientButton from '../components/GradientButton';
-import { COLORS, TYPOGRAPHY, SPACING } from '../constants/design';
+import { COLORS, TYPOGRAPHY, SPACING, BORDER_RADIUS } from '../constants/design';
 import { getEventById } from '../constants/dummyData';
+import { useAuth } from '../context/AuthContext';
 
 interface ReviewScreenProps {
   eventId: string;
@@ -21,9 +21,17 @@ interface ReviewScreenProps {
   onGoBack: () => void;
 }
 
+const SATISFACTION_LABELS: Record<number, string> = {
+  1: '😞 少し不満',
+  2: '😐 普通',
+  3: '🙂 満足',
+  4: '😄 大満足',
+  5: '🤩 最高！非常に良かった',
+};
+
 /**
- * ReviewScreen - 星評価・レビュー投稿画面
- * test_modelのイベント評価画面を再現
+ * ReviewScreen - 満足度記録・評価画面
+ * 到着後に参加したイベントの満足度を記録する
  */
 const ReviewScreen: React.FC<ReviewScreenProps> = ({
   eventId,
@@ -31,32 +39,26 @@ const ReviewScreen: React.FC<ReviewScreenProps> = ({
   onGoBack,
 }) => {
   const event = getEventById(eventId);
+  const { addVisitedEvent } = useAuth();
   const [rating, setRating] = useState(0);
-  const [comment, setComment] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const handleSubmit = async () => {
     if (rating === 0) {
-      Alert.alert('評価を選択してください', '1つ以上の星を選択してください');
+      Alert.alert('満足度を選択してください', '1つ以上の星を選択して満足度を記録してください');
       return;
     }
 
     setIsSubmitting(true);
 
-    // API呼び出しをシミュレート
     try {
-      // 実際には以下のようなAPI呼び出しを実装
-      // await api.post('/reviews', {
-      //   eventId,
-      //   rating,
-      //   comment,
-      //   timestamp: new Date().toISOString(),
-      // });
+      // 満足度を記録（ユーザープロフィールの参加履歴に保存）
+      addVisitedEvent(event?.name || '体験イベント', rating);
 
       // ダミー遅延
-      await new Promise<void>((resolve) => setTimeout(resolve, 1000));
+      await new Promise<void>((resolve) => setTimeout(resolve, 600));
 
-      Alert.alert('投稿完了', 'レビューを投稿しました', [
+      Alert.alert('記録完了', 'イベントへの参加と満足度を記録しました！', [
         {
           text: 'OK',
           onPress: () => {
@@ -66,7 +68,7 @@ const ReviewScreen: React.FC<ReviewScreenProps> = ({
         },
       ]);
     } catch {
-      Alert.alert('エラー', '投稿に失敗しました。もう一度お試しください。');
+      Alert.alert('エラー', '記録に失敗しました。もう一度お試しください。');
       setIsSubmitting(false);
     }
   };
@@ -81,12 +83,12 @@ const ReviewScreen: React.FC<ReviewScreenProps> = ({
 
   return (
     <>
-      <StatusBar barStyle="dark-content" backgroundColor={COLORS.background.primary} />
-      <ScreenContainer scrollable={true} keyboardAvoid={true}>
+      <StatusBar barStyle="dark-content" backgroundColor={COLORS.canvas} />
+      <ScreenContainer scrollable={true} keyboardAvoid={true} horizontalPadding={SPACING.base}>
         {/* ヘッダー */}
         <View style={styles.header}>
-          <Text style={styles.title}>イベント評価</Text>
-          <Text style={styles.subtitle}>あなたの感想をお聞かせください</Text>
+          <Text style={styles.title}>満足度を記録</Text>
+          <Text style={styles.subtitle}>参加したイベントの満足度を記録しましょう</Text>
         </View>
 
         {/* イベント情報 */}
@@ -95,65 +97,54 @@ const ReviewScreen: React.FC<ReviewScreenProps> = ({
             <MaterialCommunityIcons
               name="calendar-check"
               size={32}
-              color={COLORS.gradient.start}
+              color={COLORS.primary}
             />
           </View>
           <View style={styles.eventInfo}>
+            <View style={styles.arrivedTag}>
+              <MaterialCommunityIcons name="check-circle" size={12} color={COLORS.onPrimary} />
+              <Text style={styles.arrivedTagText}>参加完了</Text>
+            </View>
             <Text style={styles.eventName} numberOfLines={2}>
               {event.name}
             </Text>
             <Text style={styles.eventDate}>
-              {event.date} {event.time}
+              📍 {event.location} ({event.time})
             </Text>
           </View>
         </View>
 
         {/* 星評価セクション */}
         <View style={styles.ratingSection}>
-          <Text style={styles.sectionTitle}>評価してください</Text>
+          <Text style={styles.sectionTitle}>体験の満足度を星で評価</Text>
           <StarRating
             rating={rating}
             onRatingChange={setRating}
             size="lg"
-            showLabel={true}
+            showLabel={false}
             style={styles.starRating}
           />
           <Text style={styles.ratingHint}>
             {rating === 0
-              ? '5段階で評価してください'
-              : `${rating}つ星です`}
-          </Text>
-        </View>
-
-        {/* コメントセクション */}
-        <View style={styles.commentSection}>
-          <Text style={styles.sectionTitle}>コメント（任意）</Text>
-          <TextInputField
-            placeholder="イベントの感想をお聞かせください..."
-            value={comment}
-            onChangeText={setComment}
-            multiline={true}
-            numberOfLines={4}
-            containerStyle={styles.commentInput}
-          />
-          <Text style={styles.commentHint}>
-            {comment.length} / 500 文字
+              ? 'タップして満足度を選択してください'
+              : SATISFACTION_LABELS[rating]}
           </Text>
         </View>
 
         {/* 投稿ボタン */}
         <View style={styles.buttonSection}>
           <GradientButton
-            title={isSubmitting ? '投稿中...' : '投稿する'}
+            title={isSubmitting ? '記録中...' : '満足度を保存する'}
             onPress={handleSubmit}
             disabled={isSubmitting || rating === 0}
             size="lg"
             style={styles.submitButton}
           />
           <GradientButton
-            title="キャンセル"
+            title="戻る"
             onPress={onGoBack}
             disabled={isSubmitting}
+            variant="secondary"
             size="md"
             style={styles.cancelButton}
           />
@@ -164,11 +155,10 @@ const ReviewScreen: React.FC<ReviewScreenProps> = ({
           <MaterialCommunityIcons
             name="information"
             size={16}
-            color={COLORS.status.info}
+            color={COLORS.primary}
           />
           <Text style={styles.infoText}>
-            あなたのレビューは他のユーザーの参考になります。
-            公開可能な情報のみをお記入ください。
+            記録された満足度はマイページに保存され、次回の目的地探しの参考になります。
           </Text>
         </View>
       </ScreenContainer>
@@ -178,80 +168,90 @@ const ReviewScreen: React.FC<ReviewScreenProps> = ({
 
 const styles = StyleSheet.create({
   header: {
-    marginBottom: SPACING.lg,
+    marginBottom: SPACING.md,
+    marginTop: SPACING.xs,
   },
   title: {
-    fontSize: TYPOGRAPHY.heading.size,
-    fontWeight: TYPOGRAPHY.heading.weight,
-    color: COLORS.text.primary,
-    marginBottom: SPACING.sm,
+    fontSize: TYPOGRAPHY.displaySm.fontSize,
+    fontWeight: TYPOGRAPHY.displaySm.fontWeight,
+    color: COLORS.ink,
+    marginBottom: SPACING.xs,
   },
   subtitle: {
-    fontSize: TYPOGRAPHY.body.small.size,
-    color: COLORS.text.secondary,
+    fontSize: TYPOGRAPHY.bodySm.fontSize,
+    color: COLORS.muted,
   },
   eventSection: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: COLORS.background.secondary,
-    borderRadius: 12,
+    backgroundColor: COLORS.surfaceSoft,
+    borderRadius: BORDER_RADIUS.md,
     padding: SPACING.md,
-    marginBottom: SPACING.lg,
+    marginBottom: SPACING.md,
     gap: SPACING.md,
   },
   eventIconContainer: {
     width: 48,
     height: 48,
     borderRadius: 24,
-    backgroundColor: COLORS.background.tertiary,
+    backgroundColor: COLORS.canvas,
     justifyContent: 'center',
     alignItems: 'center',
   },
   eventInfo: {
     flex: 1,
   },
+  arrivedTag: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    backgroundColor: COLORS.status.success,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: BORDER_RADIUS.full,
+    alignSelf: 'flex-start',
+    marginBottom: 4,
+  },
+  arrivedTagText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: COLORS.onPrimary,
+  },
   eventName: {
-    fontSize: TYPOGRAPHY.body.medium.size,
-    fontWeight: '600',
-    color: COLORS.text.primary,
-    marginBottom: SPACING.xs,
-    lineHeight: TYPOGRAPHY.body.medium.lineHeight,
+    fontSize: TYPOGRAPHY.titleSm.fontSize,
+    fontWeight: '700',
+    color: COLORS.ink,
+    marginBottom: 2,
   },
   eventDate: {
-    fontSize: TYPOGRAPHY.body.small.size,
-    color: COLORS.text.secondary,
+    fontSize: TYPOGRAPHY.captionSm.fontSize,
+    color: COLORS.muted,
   },
   ratingSection: {
-    marginBottom: SPACING.lg,
+    alignItems: 'center',
+    backgroundColor: COLORS.surfaceSoft,
+    padding: SPACING.lg,
+    borderRadius: BORDER_RADIUS.md,
+    marginBottom: SPACING.md,
   },
   sectionTitle: {
-    fontSize: TYPOGRAPHY.body.large.size,
+    fontSize: TYPOGRAPHY.titleSm.fontSize,
     fontWeight: '600',
-    color: COLORS.text.primary,
+    color: COLORS.ink,
     marginBottom: SPACING.md,
   },
   starRating: {
-    marginBottom: SPACING.md,
-  },
-  ratingHint: {
-    fontSize: TYPOGRAPHY.caption.size,
-    color: COLORS.text.tertiary,
-    textAlign: 'center',
-  },
-  commentSection: {
-    marginBottom: SPACING.lg,
-  },
-  commentInput: {
     marginBottom: SPACING.sm,
   },
-  commentHint: {
-    fontSize: TYPOGRAPHY.caption.size,
-    color: COLORS.text.tertiary,
-    textAlign: 'right',
+  ratingHint: {
+    fontSize: TYPOGRAPHY.bodySm.fontSize,
+    fontWeight: '700',
+    color: COLORS.primary,
+    textAlign: 'center',
   },
   buttonSection: {
-    gap: SPACING.md,
-    marginBottom: SPACING.lg,
+    gap: SPACING.xs,
+    marginBottom: SPACING.md,
   },
   submitButton: {
     width: '100%',
@@ -262,20 +262,20 @@ const styles = StyleSheet.create({
   infoBox: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    backgroundColor: `rgba(59, 130, 246, 0.1)`,
-    borderRadius: 8,
+    backgroundColor: 'rgba(255, 56, 92, 0.08)',
+    borderRadius: BORDER_RADIUS.sm,
     padding: SPACING.md,
-    gap: SPACING.sm,
-    marginBottom: SPACING.xl,
+    gap: SPACING.xs,
+    marginBottom: SPACING.lg,
   },
   infoText: {
     flex: 1,
-    fontSize: TYPOGRAPHY.body.small.size,
-    color: COLORS.status.info,
+    fontSize: TYPOGRAPHY.captionSm.fontSize,
+    color: COLORS.ink,
     lineHeight: 18,
   },
   errorText: {
-    fontSize: TYPOGRAPHY.body.medium.size,
+    fontSize: TYPOGRAPHY.bodySm.fontSize,
     color: COLORS.status.error,
     textAlign: 'center',
   },

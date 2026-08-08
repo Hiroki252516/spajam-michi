@@ -1,18 +1,26 @@
 import React from 'react';
-import { View, Text, Pressable, StyleSheet, ViewStyle, Image } from 'react-native';
+import { View, Text, Pressable, StyleSheet, ViewStyle } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import MapView, { Marker } from 'react-native-maps';
 import CardComponent from './CardComponent';
-import { COLORS, TYPOGRAPHY, SPACING, BORDER_RADIUS } from '../constants/design';
+import LocationMarker from './LocationMarker';
+import { COLORS, TYPOGRAPHY, SPACING, BORDER_RADIUS, SHADOWS } from '../constants/design';
 
 export interface EventCardData {
   id: string;
   name: string;
+  spotName?: string;
   date: string;
   time: string;
+  duration?: string;
+  cost?: string;
   location: string;
   distance?: string;
   imageUri?: string;
-  rating?: number;
+  coordinates?: {
+    latitude: number;
+    longitude: number;
+  };
 }
 
 interface EventCardProps {
@@ -22,10 +30,16 @@ interface EventCardProps {
 }
 
 /**
- * イベント情報カードコンポーネント
- * test_modelの検索結果一覧用
+ * EventCard - 目的地・条件ベースのカードコンポーネント
+ * 開催場所周辺の地図、開催時間・所要時間・必要な金額・場所・距離を分かりやすく表示
  */
 const EventCard: React.FC<EventCardProps> = ({ event, onPress, style }) => {
+  const displayTitle = event.spotName || `目的地 (${event.location})`;
+  const coordinates = event.coordinates || {
+    latitude: 35.6595,
+    longitude: 139.7004,
+  };
+
   return (
     <Pressable
       onPress={onPress}
@@ -37,74 +51,95 @@ const EventCard: React.FC<EventCardProps> = ({ event, onPress, style }) => {
     >
       <CardComponent blurred={true} padding={0}>
         <View style={styles.cardContent}>
-          {/* イベント画像 */}
-          {event.imageUri && (
-            <Image
-              source={{ uri: event.imageUri }}
-              style={styles.image}
-            />
-          )}
-
-          {/* イベント情報 */}
-          <View style={styles.infoSection}>
-            {/* タイトル */}
-            <Text
-              style={styles.eventName}
-              numberOfLines={2}
+          {/* 開催場所周辺の地図表示エリア */}
+          <View style={styles.mapWrapper} pointerEvents="none">
+            <MapView
+              style={styles.map}
+              initialRegion={{
+                latitude: coordinates.latitude,
+                longitude: coordinates.longitude,
+                latitudeDelta: 0.008,
+                longitudeDelta: 0.008,
+              }}
+              scrollEnabled={false}
+              zoomEnabled={false}
+              rotateEnabled={false}
+              pitchEnabled={false}
             >
-              {event.name}
-            </Text>
+              <Marker
+                coordinate={{
+                  latitude: coordinates.latitude,
+                  longitude: coordinates.longitude,
+                }}
+                title={displayTitle}
+              >
+                <LocationMarker isArrived={false} size="sm" />
+              </Marker>
+            </MapView>
+            <View style={styles.mapBadge}>
+              <MaterialCommunityIcons name="map-marker" size={14} color={COLORS.primary} />
+              <Text style={styles.mapBadgeText}>開催場所周辺マップ</Text>
+            </View>
+          </View>
 
-            {/* 日時・場所 */}
-            <View style={styles.detailsRow}>
-              <MaterialCommunityIcons
-                name="calendar"
-                size={16}
-                color={COLORS.text.secondary}
-              />
-              <Text style={styles.detailText}>
-                {event.date} {event.time}
+          {/* メイン情報セクション */}
+          <View style={styles.infoSection}>
+            {/* 行き先・スポット名 */}
+            <View style={styles.titleRow}>
+              <Text style={styles.spotTitle} numberOfLines={1}>
+                {displayTitle}
               </Text>
             </View>
 
-            <View style={styles.detailsRow}>
-              <MaterialCommunityIcons
-                name="map-marker"
-                size={16}
-                color={COLORS.text.secondary}
-              />
-              <Text style={styles.detailText}>
-                {event.location}
-              </Text>
+            {/* 5大条件エリア (開催時間・所要時間・必要な金額・場所・距離) */}
+            <View style={styles.detailsGrid}>
+              {/* 1. 開催時間 */}
+              <View style={styles.gridItem}>
+                <MaterialCommunityIcons name="clock-outline" size={16} color={COLORS.primary} />
+                <View style={styles.textContainer}>
+                  <Text style={styles.label}>開催時間</Text>
+                  <Text style={styles.valueText}>{event.time}</Text>
+                </View>
+              </View>
+
+              {/* 2. 所要時間 */}
+              <View style={styles.gridItem}>
+                <MaterialCommunityIcons name="timer-outline" size={16} color={COLORS.primary} />
+                <View style={styles.textContainer}>
+                  <Text style={styles.label}>所要時間</Text>
+                  <Text style={styles.valueText}>{event.duration || '約60分'}</Text>
+                </View>
+              </View>
+
+              {/* 3. 必要な金額 */}
+              <View style={styles.gridItem}>
+                <MaterialCommunityIcons name="currency-jpy" size={16} color={COLORS.primary} />
+                <View style={styles.textContainer}>
+                  <Text style={styles.label}>必要な金額</Text>
+                  <Text style={styles.valueHighlight}>{event.cost || '無料'}</Text>
+                </View>
+              </View>
+
+              {/* 4. 場所 */}
+              <View style={styles.gridItemFull}>
+                <MaterialCommunityIcons name="map-marker-outline" size={16} color={COLORS.primary} />
+                <View style={styles.textContainer}>
+                  <Text style={styles.label}>場所</Text>
+                  <Text style={styles.valueText} numberOfLines={1}>{event.location}</Text>
+                </View>
+              </View>
+
+              {/* 5. 距離 */}
+              {event.distance && (
+                <View style={styles.gridItemFull}>
+                  <MaterialCommunityIcons name="navigation-outline" size={16} color={COLORS.primary} />
+                  <View style={styles.textContainer}>
+                    <Text style={styles.label}>距離</Text>
+                    <Text style={styles.distanceText}>{event.distance}</Text>
+                  </View>
+                </View>
+              )}
             </View>
-
-            {/* 距離 */}
-            {event.distance && (
-              <View style={styles.distanceRow}>
-                <MaterialCommunityIcons
-                  name="navigation"
-                  size={16}
-                  color={COLORS.gradient.start}
-                />
-                <Text style={styles.distanceText}>
-                  {event.distance}
-                </Text>
-              </View>
-            )}
-
-            {/* 評価 */}
-            {event.rating !== undefined && event.rating > 0 && (
-              <View style={styles.ratingRow}>
-                <MaterialCommunityIcons
-                  name="star"
-                  size={16}
-                  color={COLORS.star.filled}
-                />
-                <Text style={styles.ratingText}>
-                  {event.rating.toFixed(1)}
-                </Text>
-              </View>
-            )}
           </View>
         </View>
       </CardComponent>
@@ -117,59 +152,104 @@ const styles = StyleSheet.create({
     marginBottom: SPACING.md,
   },
   pressed: {
-    opacity: 0.8,
+    opacity: 0.92,
+    transform: [{ scale: 0.995 }],
   },
   cardContent: {
     overflow: 'hidden',
+    borderRadius: BORDER_RADIUS.md,
   },
-  image: {
+  mapWrapper: {
+    position: 'relative',
     width: '100%',
-    height: 150,
-    borderTopLeftRadius: BORDER_RADIUS.lg,
-    borderTopRightRadius: BORDER_RADIUS.lg,
+    height: 140,
+    backgroundColor: COLORS.surfaceSoft,
+  },
+  map: {
+    width: '100%',
+    height: '100%',
+  },
+  mapBadge: {
+    position: 'absolute',
+    top: SPACING.sm,
+    left: SPACING.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: 'rgba(255, 255, 255, 0.92)',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: BORDER_RADIUS.full,
+    borderWidth: 1,
+    borderColor: COLORS.hairline,
+    ...SHADOWS.sm,
+  },
+  mapBadgeText: {
+    fontSize: TYPOGRAPHY.captionSm.fontSize,
+    fontWeight: '700',
+    color: COLORS.ink,
   },
   infoSection: {
     padding: SPACING.md,
   },
-  eventName: {
-    fontSize: TYPOGRAPHY.body.large.size,
-    fontWeight: '600',
-    color: COLORS.text.primary,
-    marginBottom: SPACING.md,
-    lineHeight: TYPOGRAPHY.body.large.lineHeight,
-  },
-  detailsRow: {
+  titleRow: {
     flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: SPACING.sm,
-    gap: SPACING.sm,
   },
-  detailText: {
-    fontSize: TYPOGRAPHY.body.small.size,
-    color: COLORS.text.secondary,
+  spotTitle: {
+    fontSize: TYPOGRAPHY.titleSm.fontSize,
+    fontWeight: '700',
+    color: COLORS.ink,
+    flex: 1,
+    marginRight: SPACING.xs,
+  },
+  detailsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: SPACING.xs,
+    backgroundColor: COLORS.surfaceSoft,
+    padding: SPACING.sm,
+    borderRadius: BORDER_RADIUS.sm,
+  },
+  gridItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    width: '48%',
+    gap: 6,
+    paddingVertical: 2,
+  },
+  gridItemFull: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    width: '100%',
+    gap: 6,
+    paddingVertical: 2,
+  },
+  textContainer: {
     flex: 1,
   },
-  distanceRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: SPACING.md,
-    gap: SPACING.sm,
+  label: {
+    fontSize: 10,
+    fontWeight: '500',
+    color: COLORS.muted,
+    textTransform: 'uppercase',
+  },
+  valueText: {
+    fontSize: TYPOGRAPHY.captionSm.fontSize,
+    fontWeight: '600',
+    color: COLORS.ink,
+  },
+  valueHighlight: {
+    fontSize: TYPOGRAPHY.captionSm.fontSize,
+    fontWeight: '700',
+    color: COLORS.primary,
   },
   distanceText: {
-    fontSize: TYPOGRAPHY.body.medium.size,
-    fontWeight: '500',
-    color: COLORS.gradient.start,
-  },
-  ratingRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: SPACING.sm,
-    gap: SPACING.xs,
-  },
-  ratingText: {
-    fontSize: TYPOGRAPHY.body.small.size,
-    fontWeight: '600',
-    color: COLORS.text.primary,
+    fontSize: TYPOGRAPHY.captionSm.fontSize,
+    fontWeight: '700',
+    color: COLORS.primary,
   },
 });
 

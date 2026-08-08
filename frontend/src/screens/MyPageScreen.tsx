@@ -92,7 +92,7 @@ const MyPageScreen: React.FC<MyPageScreenProps> = ({ onGoBack, onLogoutSuccess }
 
         {/* 2. 参加イベント一覧（参加日・イベント名・満足度） */}
         <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>参加イベント一覧</Text>
+          <Text style={styles.sectionTitle}>参加・満足度記録一覧</Text>
           <Text style={styles.sectionCount}>{visitedEvents.length}件</Text>
         </View>
 

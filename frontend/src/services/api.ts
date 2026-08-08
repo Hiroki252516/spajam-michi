@@ -1,7 +1,4 @@
-/**
- * API通信サービス層
- * バックエンド APIと通信するためのラッパー
- */
+import { DUMMY_EVENTS } from '../constants/dummyData';
 
 const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:8080';
 
@@ -14,15 +11,17 @@ interface ApiResponse<T = unknown> {
   };
 }
 
-interface EventData {
+export interface EventData {
   id: string;
   name: string;
+  spotName?: string;
   date: string;
   time: string;
+  duration?: string;
+  cost?: string;
   location: string;
   distance?: string;
   imageUri?: string;
-  rating?: number;
   description?: string;
   coordinates?: {
     latitude: number;
@@ -42,28 +41,25 @@ interface ReviewResponse {
   eventId: string;
   userId: string;
   rating: number;
-  comment: string;
   createdAt: string;
-  updatedAt: string;
+  updatedAt?: string;
 }
 
 /**
- * イベント検索
+ * イベント一覧取得（バックエンド接続時は実データ、未接続時はダミーデータにフォールバック）
  */
-export const searchEvents = async (
-  query: string,
+export const fetchEvents = async (
   limit: number = 20,
   offset: number = 0
 ): Promise<EventData[]> => {
   try {
     const params = new URLSearchParams({
-      q: query,
       limit: limit.toString(),
       offset: offset.toString(),
     });
 
     const response = await fetch(
-      `${API_BASE_URL}/api/events/search?${params.toString()}`
+      `${API_BASE_URL}/api/events?${params.toString()}`
     );
 
     if (!response.ok) {
@@ -78,9 +74,19 @@ export const searchEvents = async (
 
     return data.data?.events || [];
   } catch (error) {
-    console.error('Error searching events:', error);
-    throw error;
+    console.warn('Backend API fetch failed, falling back to dummy events:', error);
+    return DUMMY_EVENTS as EventData[];
   }
+};
+
+/**
+ * イベント検索（互換性保持用）
+ */
+export const searchEvents = async (
+  limit: number = 20,
+  offset: number = 0
+): Promise<EventData[]> => {
+  return fetchEvents(limit, offset);
 };
 
 /**
@@ -113,7 +119,6 @@ export const getEventDetail = async (eventId: string): Promise<EventData> => {
 export const submitReview = async (
   eventId: string,
   rating: number,
-  comment: string = '',
   userId: string = 'anonymous'
 ): Promise<ReviewResponse> => {
   try {
@@ -125,7 +130,6 @@ export const submitReview = async (
       body: JSON.stringify({
         eventId,
         rating,
-        comment,
         userId,
       }),
     });

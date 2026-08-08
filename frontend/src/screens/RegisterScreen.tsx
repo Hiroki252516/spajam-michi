@@ -5,6 +5,7 @@ import {
   StyleSheet,
   StatusBar,
   Pressable,
+  Alert,
 } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import ScreenContainer from '../components/ScreenContainer';
@@ -60,6 +61,20 @@ const RegisterScreen: React.FC<RegisterScreenProps> = ({
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : '登録に失敗しました';
       setError(message);
+    }
+  };
+
+  // デモ新規登録（ワンタップ）
+  const handleDemoRegister = async () => {
+    setName('デモユーザー');
+    setEmail('demo_new@spajam.jp');
+    setPassword('demo1234');
+    setConfirmPassword('demo1234');
+    try {
+      await register('デモユーザー', 'demo_new@spajam.jp', 'demo1234');
+      onRegisterSuccess();
+    } catch {
+      Alert.alert('エラー', 'デモアカウント作成に失敗しました');
     }
   };
 
@@ -139,6 +154,16 @@ const RegisterScreen: React.FC<RegisterScreenProps> = ({
             size="lg"
             style={{ marginTop: SPACING.lg }}
           />
+
+          {/* デモアカウント新規登録ボタン */}
+          <Pressable
+            onPress={handleDemoRegister}
+            disabled={isLoading}
+            style={styles.demoRegisterButton}
+          >
+            <MaterialCommunityIcons name="account-key-outline" size={18} color={COLORS.primary} />
+            <Text style={styles.demoRegisterText}>ワンタップでデモ新規登録</Text>
+          </Pressable>
         </View>
 
         {/* ログイン画面への案内リンク */}
@@ -208,6 +233,21 @@ const styles = StyleSheet.create({
     fontSize: TYPOGRAPHY.captionSm.fontSize,
     color: COLORS.primaryErrorText,
     marginTop: SPACING.xs,
+  },
+  demoRegisterButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: SPACING.xs,
+    paddingVertical: SPACING.md,
+    marginTop: SPACING.md,
+    borderRadius: BORDER_RADIUS.sm,
+    backgroundColor: COLORS.surfaceSoft,
+  },
+  demoRegisterText: {
+    fontSize: TYPOGRAPHY.bodySm.fontSize,
+    fontWeight: '600',
+    color: COLORS.primary,
   },
   footerLinkContainer: {
     flexDirection: 'row',

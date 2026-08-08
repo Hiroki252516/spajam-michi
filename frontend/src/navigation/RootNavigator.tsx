@@ -1,4 +1,5 @@
 import React from 'react';
+import { View, ActivityIndicator } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createStackNavigator, StackScreenProps } from '@react-navigation/stack';
 import SearchScreen from '../screens/SearchScreen';
@@ -8,6 +9,7 @@ import LoginScreen from '../screens/LoginScreen';
 import MyPageScreen from '../screens/MyPageScreen';
 import RegisterScreen from '../screens/RegisterScreen';
 import { COLORS } from '../constants/design';
+import { useAuth } from '../context/AuthContext';
 
 export type RootStackParamList = {
   Search: undefined;
@@ -22,53 +24,62 @@ const Stack = createStackNavigator<RootStackParamList>();
 
 /**
  * RootNavigator
- * ログイン・新規登録・マイページ・検索・ガイド・評価画面のスタックナビゲーション
+ * 起動時ログイン強制（未ログイン時はログイン/登録画面、ログイン後はメイン画面へ遷移）
  */
 export const RootNavigator: React.FC = () => {
+  const { isLoggedIn, isLoading } = useAuth();
+
+  if (isLoading) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: COLORS.canvas }}>
+        <ActivityIndicator size="large" color={COLORS.primary} />
+      </View>
+    );
+  }
+
   return (
     <NavigationContainer>
       <Stack.Navigator
         id="RootStack"
+        initialRouteName={isLoggedIn ? 'Search' : 'Login'}
         screenOptions={{
           headerShown: false,
           cardStyle: { backgroundColor: COLORS.canvas },
         }}
       >
-        {/* 検索画面 */}
-        <Stack.Screen
-          name="Search"
-          component={SearchScreenContainer}
-        />
-
-        {/* ログイン画面 */}
-        <Stack.Screen
-          name="Login"
-          component={LoginScreenContainer}
-        />
-
-        {/* 新規登録画面 */}
-        <Stack.Screen
-          name="Register"
-          component={RegisterScreenContainer}
-        />
-
-        {/* マイページ画面 */}
-        <Stack.Screen
-          name="MyPage"
-          component={MyPageScreenContainer}
-        />
-
-        {/* ナビゲーション画面 */}
-        <Stack.Screen
-          name="Guide"
-          component={GuideScreenContainer}
-        />
-
-        {/* 評価画面 */}
-        <Stack.Screen
-          name="Review"
-          component={ReviewScreenContainer}
-        />
+        {!isLoggedIn ? (
+          /* 未ログイン時: ログイン画面・新規登録画面を強制 */
+          <>
+            <Stack.Screen
+              name="Login"
+              component={LoginScreenContainer}
+            />
+            <Stack.Screen
+              name="Register"
+              component={RegisterScreenContainer}
+            />
+          </>
+        ) : (
+          /* ログイン済み時: メインコンテンツ画面群 */
+          <>
+            <Stack.Screen
+              name="Search"
+              component={SearchScreenContainer}
+            />
+            <Stack.Screen
+              name="MyPage"
+              component={MyPageScreenContainer}
+            />
+            <Stack.Screen
+              name="Guide"
+              component={GuideScreenContainer}
+            />
+            <Stack.Screen
+              name="Review"
+              component={ReviewScreenContainer}
+            />
+          </>
+        )}
       </Stack.Navigator>
     </NavigationContainer>
   );
@@ -104,13 +115,10 @@ const LoginScreenContainer: React.FC<StackScreenProps<RootStackParamList, 'Login
   return (
     <LoginScreen
       onLoginSuccess={() => {
-        navigation.replace('MyPage');
+        // AuthContext の isLoggedIn が true に変わるため自動的にメイン画面へ切り替わります
       }}
       onNavigateToRegister={() => {
         navigation.push('Register');
-      }}
-      onGoBack={() => {
-        navigation.goBack();
       }}
     />
   );
@@ -125,7 +133,7 @@ const RegisterScreenContainer: React.FC<StackScreenProps<RootStackParamList, 'Re
   return (
     <RegisterScreen
       onRegisterSuccess={() => {
-        navigation.replace('MyPage');
+        // AuthContext の isLoggedIn が true に変わるため自動的にメイン画面へ切り替わります
       }}
       onNavigateToLogin={() => {
         navigation.push('Login');

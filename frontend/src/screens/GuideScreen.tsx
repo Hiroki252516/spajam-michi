@@ -25,7 +25,7 @@ interface GuideScreenProps {
 
 /**
  * GuideScreen - GPS基盤ナビゲーション画面
- * test_modelのナビゲーション画面を再現
+ * 目的地に到着するとイベント詳細が開放され、参加と満足度の記録へ進む
  */
 const GuideScreen: React.FC<GuideScreenProps> = ({
   eventId,
@@ -35,12 +35,12 @@ const GuideScreen: React.FC<GuideScreenProps> = ({
   const event = getEventById(eventId);
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [userLocation, setUserLocation] = useState({
-    latitude: 35.6595,  // デフォルト位置（東京渋谷）
+    latitude: 35.6595, // デフォルト位置（東京渋谷）
     longitude: 139.7004,
     latitudeDelta: 0.01,
     longitudeDelta: 0.01,
   });
-  // Note: setUserLocation は実装予定だがローカル状態でのみ使用
+
   const [isArrived, setIsArrived] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [distance, setDistance] = useState<number | null>(null);
@@ -56,7 +56,7 @@ const GuideScreen: React.FC<GuideScreenProps> = ({
     lat2: number,
     lon2: number
   ): number => {
-    const R = 6371000; // 地球の半径（メートル）
+    const R = 6371000;
     const dLat = ((lat2 - lat1) * Math.PI) / 180;
     const dLon = ((lon2 - lon1) * Math.PI) / 180;
     const a =
@@ -70,11 +70,8 @@ const GuideScreen: React.FC<GuideScreenProps> = ({
   };
 
   useEffect(() => {
-    // GPS位置情報を取得（ダミー実装）
-    // 実際には expo-location を使用
     setIsLoading(false);
 
-    // 定期的に距離を更新
     const interval = setInterval(() => {
       if (event) {
         const dist = calculateDistance(
@@ -85,21 +82,19 @@ const GuideScreen: React.FC<GuideScreenProps> = ({
         );
         setDistance(dist);
 
-        // 到着判定
         if (dist < ARRIVAL_THRESHOLD && !isArrived) {
           setIsArrived(true);
-          onArrived();
         }
       }
     }, 2000);
 
     return () => clearInterval(interval);
-  }, [event, userLocation, isArrived, onArrived]);
+  }, [event, userLocation, isArrived]);
 
   if (!event) {
     return (
       <ScreenContainer>
-        <Text style={styles.errorText}>イベント情報が見つかりません</Text>
+        <Text style={styles.errorText}>目的地情報が見つかりません</Text>
       </ScreenContainer>
     );
   }
@@ -108,7 +103,7 @@ const GuideScreen: React.FC<GuideScreenProps> = ({
     return (
       <ScreenContainer>
         <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color={COLORS.gradient.start} />
+          <ActivityIndicator size="large" color={COLORS.primary} />
           <Text style={styles.loadingText}>地図を読み込み中...</Text>
         </View>
       </ScreenContainer>
@@ -131,7 +126,7 @@ const GuideScreen: React.FC<GuideScreenProps> = ({
               latitude: event.coordinates.latitude,
               longitude: event.coordinates.longitude,
             }}
-            title={isArrived ? event.name : '?'}
+            title={isArrived ? event.name : (event.spotName || '目的地スポット')}
           >
             <LocationMarker isArrived={isArrived} size="md" />
           </Marker>
@@ -142,17 +137,32 @@ const GuideScreen: React.FC<GuideScreenProps> = ({
           <MaterialCommunityIcons
             name="chevron-left"
             size={24}
-            color={COLORS.text.white}
+            color={COLORS.onPrimary}
           />
         </Pressable>
 
         {/* イベント情報パネル（下部） */}
         <View style={styles.infoPanel}>
           <CardComponent blurred={true} padding={SPACING.md}>
-            {/* イベント名または「?」 */}
-            <Text style={styles.eventNameOrMask}>
-              {isArrived ? event.name : '?'}
-            </Text>
+            {/* 到着前後のタイトル */}
+            {isArrived ? (
+              <View style={styles.unlockedHeader}>
+                <View style={styles.unlockedBadge}>
+                  <MaterialCommunityIcons name="party-popper" size={16} color={COLORS.onPrimary} />
+                  <Text style={styles.unlockedBadgeText}>イベント解放！</Text>
+                </View>
+                <Text style={styles.revealedEventName}>{event.name}</Text>
+                <Text style={styles.eventDescription}>{event.description}</Text>
+              </View>
+            ) : (
+              <View style={styles.mysteryHeader}>
+                <View style={styles.spotTag}>
+                  <MaterialCommunityIcons name="map-marker-radius" size={16} color={COLORS.primary} />
+                  <Text style={styles.spotTagText}>{event.spotName || '目的地スポット'}</Text>
+                </View>
+                <Text style={styles.maskedTitle}>🔒 到着するとイベントが判明します</Text>
+              </View>
+            )}
 
             {/* 距離・状態 */}
             {distance !== null && (
@@ -160,10 +170,10 @@ const GuideScreen: React.FC<GuideScreenProps> = ({
                 <MaterialCommunityIcons
                   name="navigation"
                   size={18}
-                  color={COLORS.gradient.start}
+                  color={COLORS.primary}
                 />
                 <Text style={styles.distanceText}>
-                  {distance < 1000
+                  目的地まで {distance < 1000
                     ? `${Math.round(distance)} m`
                     : `${(distance / 1000).toFixed(1)} km`}
                 </Text>
@@ -175,41 +185,48 @@ const GuideScreen: React.FC<GuideScreenProps> = ({
               <View style={styles.arrivedSection}>
                 <MaterialCommunityIcons
                   name="check-circle"
-                  size={20}
+                  size={22}
                   color={COLORS.status.success}
                 />
-                <Text style={styles.arrivedText}>到着しました！</Text>
+                <Text style={styles.arrivedText}>目的地に到着！イベント開催中です 🎉</Text>
               </View>
             ) : (
-              <Text style={styles.guidingText}>目的地に向かっています...</Text>
+              <View style={styles.guidingRow}>
+                <ActivityIndicator size="small" color={COLORS.primary} />
+                <Text style={styles.guidingText}>目的地に向かっています...</Text>
+                <Pressable
+                  style={styles.simArrivalButton}
+                  onPress={() => setIsArrived(true)}
+                >
+                  <Text style={styles.simArrivalText}>[テスト:到着]</Text>
+                </Pressable>
+              </View>
             )}
 
-            {/* 詳細情報 */}
-            <View style={styles.detailsSection}>
-              <View style={styles.detailRow}>
-                <MaterialCommunityIcons
-                  name="calendar"
-                  size={16}
-                  color={COLORS.text.secondary}
-                />
-                <Text style={styles.detailText}>
-                  {event.date} {event.time}
-                </Text>
+            {/* 詳細5大条件 */}
+            <View style={styles.detailsGrid}>
+              <View style={styles.detailChip}>
+                <MaterialCommunityIcons name="clock-outline" size={14} color={COLORS.muted} />
+                <Text style={styles.chipText}>{event.time}</Text>
               </View>
-              <View style={styles.detailRow}>
-                <MaterialCommunityIcons
-                  name="map-marker"
-                  size={16}
-                  color={COLORS.text.secondary}
-                />
-                <Text style={styles.detailText}>{event.location}</Text>
+              <View style={styles.detailChip}>
+                <MaterialCommunityIcons name="timer-outline" size={14} color={COLORS.muted} />
+                <Text style={styles.chipText}>{event.duration || '約60分'}</Text>
+              </View>
+              <View style={styles.detailChip}>
+                <MaterialCommunityIcons name="currency-jpy" size={14} color={COLORS.primary} />
+                <Text style={styles.chipTextBold}>{event.cost || '無料'}</Text>
+              </View>
+              <View style={styles.detailChipFull}>
+                <MaterialCommunityIcons name="map-marker-outline" size={14} color={COLORS.muted} />
+                <Text style={styles.chipText} numberOfLines={1}>{event.location}</Text>
               </View>
             </View>
 
-            {/* 評価へ進むボタン（到着後のみ） */}
+            {/* 満足度記録へ進むボタン（到着後） */}
             {isArrived && (
               <GradientButton
-                title="イベントを評価する"
+                title="イベントに参加して満足度を記録する"
                 onPress={onArrived}
                 size="md"
                 style={styles.reviewButton}
@@ -237,7 +254,7 @@ const styles = StyleSheet.create({
     width: 44,
     height: 44,
     borderRadius: 22,
-    backgroundColor: COLORS.gradient.start,
+    backgroundColor: COLORS.primary,
     justifyContent: 'center',
     alignItems: 'center',
     ...SHADOWS.lg,
@@ -250,63 +267,138 @@ const styles = StyleSheet.create({
     paddingHorizontal: SPACING.md,
     paddingVertical: SPACING.lg,
   },
-  eventNameOrMask: {
-    fontSize: TYPOGRAPHY.heading.size,
-    fontWeight: TYPOGRAPHY.heading.weight,
-    color: COLORS.text.primary,
-    marginBottom: SPACING.md,
+  mysteryHeader: {
+    marginBottom: SPACING.sm,
+  },
+  spotTag: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginBottom: 4,
+  },
+  spotTagText: {
+    fontSize: TYPOGRAPHY.titleSm.fontSize,
+    fontWeight: '700',
+    color: COLORS.ink,
+  },
+  maskedTitle: {
+    fontSize: TYPOGRAPHY.captionSm.fontSize,
+    color: COLORS.primary,
+    fontWeight: '600',
+  },
+  unlockedHeader: {
+    marginBottom: SPACING.sm,
+  },
+  unlockedBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 4,
+    backgroundColor: COLORS.primary,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: BORDER_RADIUS.full,
+    marginBottom: 4,
+  },
+  unlockedBadgeText: {
+    fontSize: TYPOGRAPHY.captionSm.fontSize,
+    fontWeight: '700',
+    color: COLORS.onPrimary,
+  },
+  revealedEventName: {
+    fontSize: TYPOGRAPHY.displaySm.fontSize,
+    fontWeight: TYPOGRAPHY.displaySm.fontWeight,
+    color: COLORS.ink,
+    marginBottom: 4,
+  },
+  eventDescription: {
+    fontSize: TYPOGRAPHY.bodySm.fontSize,
+    color: COLORS.body,
   },
   statusRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: SPACING.sm,
-    marginBottom: SPACING.md,
+    gap: SPACING.xs,
+    marginBottom: SPACING.xs,
   },
   distanceText: {
-    fontSize: TYPOGRAPHY.body.large.size,
-    fontWeight: '600',
-    color: COLORS.gradient.start,
+    fontSize: TYPOGRAPHY.bodySm.fontSize,
+    fontWeight: '700',
+    color: COLORS.primary,
   },
   arrivedSection: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: SPACING.sm,
-    paddingVertical: SPACING.md,
-    paddingHorizontal: SPACING.md,
-    backgroundColor: 'rgba(16, 185, 129, 0.1)',
-    borderRadius: BORDER_RADIUS.md,
-    marginBottom: SPACING.md,
+    gap: SPACING.xs,
+    paddingVertical: SPACING.xs,
+    paddingHorizontal: SPACING.sm,
+    backgroundColor: 'rgba(16, 185, 129, 0.12)',
+    borderRadius: BORDER_RADIUS.sm,
+    marginBottom: SPACING.xs,
   },
   arrivedText: {
-    fontSize: TYPOGRAPHY.body.medium.size,
-    fontWeight: '600',
+    fontSize: TYPOGRAPHY.captionSm.fontSize,
+    fontWeight: '700',
     color: COLORS.status.success,
   },
-  guidingText: {
-    fontSize: TYPOGRAPHY.body.small.size,
-    color: COLORS.text.secondary,
-    marginBottom: SPACING.md,
-    fontStyle: 'italic',
-  },
-  detailsSection: {
-    borderTopWidth: 1,
-    borderTopColor: COLORS.card.border,
-    paddingVertical: SPACING.md,
-    marginTop: SPACING.md,
-    gap: SPACING.sm,
-  },
-  detailRow: {
+  guidingRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: SPACING.sm,
+    gap: SPACING.xs,
+    marginBottom: SPACING.xs,
   },
-  detailText: {
-    fontSize: TYPOGRAPHY.body.small.size,
-    color: COLORS.text.secondary,
+  guidingText: {
+    fontSize: TYPOGRAPHY.captionSm.fontSize,
+    color: COLORS.muted,
+    fontStyle: 'italic',
     flex: 1,
   },
+  simArrivalButton: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    backgroundColor: COLORS.surfaceStrong,
+    borderRadius: BORDER_RADIUS.sm,
+  },
+  simArrivalText: {
+    fontSize: 11,
+    color: COLORS.muted,
+  },
+  detailsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginVertical: SPACING.xs,
+  },
+  detailChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: COLORS.surfaceSoft,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: BORDER_RADIUS.sm,
+  },
+  detailChipFull: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: COLORS.surfaceSoft,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: BORDER_RADIUS.sm,
+    width: '100%',
+  },
+  chipText: {
+    fontSize: TYPOGRAPHY.captionSm.fontSize,
+    color: COLORS.ink,
+  },
+  chipTextBold: {
+    fontSize: TYPOGRAPHY.captionSm.fontSize,
+    fontWeight: '700',
+    color: COLORS.primary,
+  },
   reviewButton: {
-    marginTop: SPACING.lg,
+    marginTop: SPACING.sm,
     width: '100%',
   },
   loadingContainer: {
@@ -316,11 +408,11 @@ const styles = StyleSheet.create({
     gap: SPACING.md,
   },
   loadingText: {
-    fontSize: TYPOGRAPHY.body.medium.size,
-    color: COLORS.text.secondary,
+    fontSize: TYPOGRAPHY.bodySm.fontSize,
+    color: COLORS.muted,
   },
   errorText: {
-    fontSize: TYPOGRAPHY.body.medium.size,
+    fontSize: TYPOGRAPHY.bodySm.fontSize,
     color: COLORS.status.error,
     textAlign: 'center',
   },

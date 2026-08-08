@@ -1,18 +1,22 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   FlatList,
+  ScrollView,
   View,
   Text,
   StyleSheet,
   StatusBar,
   Pressable,
+  ActivityIndicator,
+  RefreshControl,
 } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import ScreenContainer from '../components/ScreenContainer';
-import SearchBarPill from '../components/SearchBarPill';
 import EventCard, { EventCardData } from '../components/EventCard';
+import CardComponent from '../components/CardComponent';
 import { COLORS, TYPOGRAPHY, SPACING, BORDER_RADIUS, SHADOWS } from '../constants/design';
-import { searchEvents } from '../constants/dummyData';
+import { DUMMY_EVENTS } from '../constants/dummyData';
+import { fetchEvents } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 
 interface SearchScreenProps {
@@ -22,25 +26,64 @@ interface SearchScreenProps {
 }
 
 /**
- * SearchScreen - イベント検索・一覧表示画面
- * DESIGN.md: Warm Marketplace (Stays/Experiences/Services タブ, ピル型検索バー, Photo-first カード, アカウント導線)
+ * SearchScreen - イベント一覧 & ガイド（チュートリアル）表示画面
  */
 const SearchScreen: React.FC<SearchScreenProps> = ({
   onEventSelect,
   onOpenLogin,
   onOpenMyPage,
 }) => {
-  const { isLoggedIn, user } = useAuth();
-  const [activeTab, setActiveTab] = useState<'events' | 'experiences' | 'services'>('events');
-  const [searchQuery, setSearchQuery] = useState('');
-  const [isSearching, setIsSearching] = useState(false);
+  const { isLoggedIn, user, completeTutorial } = useAuth();
+  const [activeTab, setActiveTab] = useState<'events' | 'guide'>(
+    user?.isFirstLogin ? 'guide' : 'events'
+  );
+  const [events, setEvents] = useState<EventCardData[]>(DUMMY_EVENTS);
+  const [isLoading, setIsLoading] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
-  const handleSearch = () => {
-    setIsSearching(true);
-    setTimeout(() => setIsSearching(false), 200);
+  useEffect(() => {
+    if (user?.isFirstLogin) {
+      setActiveTab('guide');
+    }
+  }, [user?.isFirstLogin]);
+
+  const handleFinishTutorial = () => {
+    completeTutorial();
+    setActiveTab('events');
   };
 
-  const filteredEvents = searchEvents(searchQuery);
+  const loadEvents = async () => {
+    try {
+      const data = await fetchEvents();
+      if (data && data.length > 0) {
+        setEvents(data as EventCardData[]);
+      }
+    } catch (error) {
+      console.warn('Failed to load events from backend:', error);
+    }
+  };
+
+  useEffect(() => {
+    let isMounted = true;
+    const initialLoad = async () => {
+      setIsLoading(true);
+      await loadEvents();
+      if (isMounted) {
+        setIsLoading(false);
+      }
+    };
+
+    initialLoad();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  const handleRefresh = async () => {
+    setIsRefreshing(true);
+    await loadEvents();
+    setIsRefreshing(false);
+  };
 
   const handleEventPress = (eventId: string, eventName: string) => {
     onEventSelect(eventId, eventName);
@@ -53,6 +96,7 @@ const SearchScreen: React.FC<SearchScreenProps> = ({
         {/* トッププロダクトナビゲーション + アカウントボタン (DESIGN.md top-nav) */}
         <View style={styles.headerRow}>
           <View style={styles.navBar}>
+            {/* イベントタブ */}
             <Pressable
               onPress={() => setActiveTab('events')}
               style={[styles.tabItem, activeTab === 'events' && styles.tabItemActive]}
@@ -67,40 +111,22 @@ const SearchScreen: React.FC<SearchScreenProps> = ({
               </Text>
             </Pressable>
 
+            {/* ガイド（チュートリアル）タブ */}
             <Pressable
-              onPress={() => setActiveTab('experiences')}
-              style={[styles.tabItem, activeTab === 'experiences' && styles.tabItemActive]}
-            >
-              <View style={styles.tabIconWrapper}>
-                <MaterialCommunityIcons
-                  name="ticket-confirmation-outline"
-                  size={22}
-                  color={activeTab === 'experiences' ? COLORS.ink : COLORS.muted}
-                />
-                <View style={styles.newBadge}>
-                  <Text style={styles.newBadgeText}>NEW</Text>
-                </View>
-              </View>
-              <Text style={[styles.tabLabel, activeTab === 'experiences' && styles.tabLabelActive]}>
-                体験
-              </Text>
-            </Pressable>
-
-            <Pressable
-              onPress={() => setActiveTab('services')}
-              style={[styles.tabItem, activeTab === 'services' && styles.tabItemActive]}
+              onPress={() => setActiveTab('guide')}
+              style={[styles.tabItem, activeTab === 'guide' && styles.tabItemActive]}
             >
               <View style={styles.tabIconWrapper}>
                 <MaterialCommunityIcons
                   name="compass-outline"
                   size={22}
-                  color={activeTab === 'services' ? COLORS.ink : COLORS.muted}
+                  color={activeTab === 'guide' ? COLORS.ink : COLORS.muted}
                 />
-                <View style={styles.newBadge}>
-                  <Text style={styles.newBadgeText}>NEW</Text>
+                <View style={styles.guideBadge}>
+                  <Text style={styles.guideBadgeText}>使い方</Text>
                 </View>
               </View>
-              <Text style={[styles.tabLabel, activeTab === 'services' && styles.tabLabelActive]}>
+              <Text style={[styles.tabLabel, activeTab === 'guide' && styles.tabLabelActive]}>
                 ガイド
               </Text>
             </Pressable>
@@ -124,47 +150,141 @@ const SearchScreen: React.FC<SearchScreenProps> = ({
           </Pressable>
         </View>
 
-        {/* ピル型グローバル検索バー (DESIGN.md search-bar-pill) */}
-        <View style={styles.searchSection}>
-          <SearchBarPill
-            query={searchQuery}
-            onChangeQuery={setSearchQuery}
-            onSearch={handleSearch}
-            isSearching={isSearching}
-          />
-        </View>
+        {/* タブに応じたメインコンテンツ切り替え */}
+        {activeTab === 'events' ? (
+          <>
+            {/* 見出し */}
+            <View style={styles.sectionHeader}>
+              <Text style={styles.headline}>Where to go next?</Text>
+              <Text style={styles.subheadline}>
+                条件に合う場所へ出発しよう！何が待っているかは到着後のお楽しみ ✨
+              </Text>
+            </View>
 
-        {/* 見出し */}
-        <View style={styles.sectionHeader}>
-          <Text style={styles.headline}>Find your next getaway</Text>
-          <Text style={styles.subheadline}>近くで開催される注目のイベント</Text>
-        </View>
-
-        {/* イベント一覧 (DESIGN.md property-card) */}
-        {filteredEvents.length > 0 ? (
-          <FlatList
-            data={filteredEvents}
-            renderItem={({ item }) => (
-              <EventCard
-                event={item as EventCardData}
-                onPress={() => handleEventPress(item.id, item.name)}
+            {/* イベント一覧 (DESIGN.md property-card) */}
+            {isLoading ? (
+              <View style={styles.loadingContainer}>
+                <ActivityIndicator size="large" color={COLORS.primary} />
+              </View>
+            ) : events.length > 0 ? (
+              <FlatList
+                data={events}
+                renderItem={({ item }) => (
+                  <EventCard
+                    event={item}
+                    onPress={() => handleEventPress(item.id, item.name)}
+                  />
+                )}
+                keyExtractor={(item) => item.id}
+                scrollEnabled={true}
+                contentContainerStyle={styles.listContent}
+                showsVerticalScrollIndicator={false}
+                refreshControl={
+                  <RefreshControl
+                    refreshing={isRefreshing}
+                    onRefresh={handleRefresh}
+                    colors={[COLORS.primary]}
+                    tintColor={COLORS.primary}
+                  />
+                }
               />
+            ) : (
+              <View style={styles.emptyState}>
+                <MaterialCommunityIcons
+                  name="magnify-remove-outline"
+                  size={48}
+                  color={COLORS.mutedSoft}
+                />
+                <Text style={styles.emptyStateTitle}>イベントが見つかりませんでした</Text>
+              </View>
             )}
-            keyExtractor={(item) => item.id}
-            scrollEnabled={true}
-            contentContainerStyle={styles.listContent}
-            showsVerticalScrollIndicator={false}
-          />
+          </>
         ) : (
-          <View style={styles.emptyState}>
-            <MaterialCommunityIcons
-              name="magnify-remove-outline"
-              size={48}
-              color={COLORS.mutedSoft}
-            />
-            <Text style={styles.emptyStateTitle}>イベントが見つかりませんでした</Text>
-            <Text style={styles.emptyStateSub}>キーワードを変えて検索してみてください</Text>
-          </View>
+          /* ガイド（チュートリアル）表示画面 */
+          <ScrollView
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={styles.guideContainer}
+          >
+            <View style={styles.sectionHeader}>
+              <Text style={styles.headline}>App Guide & Tutorial 🗺️</Text>
+              <Text style={styles.subheadline}>
+                アプリの楽しみ方と基本の使い方ガイド
+              </Text>
+            </View>
+
+            {/* チュートリアルステップ 1 */}
+            <CardComponent blurred={true} padding={SPACING.md} style={styles.tutorialCard}>
+              <View style={styles.stepHeader}>
+                <View style={styles.stepBadge}>
+                  <Text style={styles.stepBadgeText}>STEP 1</Text>
+                </View>
+                <Text style={styles.stepTitle}>条件から行き先を選ぶ</Text>
+              </View>
+              <View style={styles.stepContent}>
+                <MaterialCommunityIcons name="map-search-outline" size={32} color={COLORS.primary} />
+                <Text style={styles.stepDescription}>
+                  開催時間・所要時間・必要な金額・開催場所周辺の地図を確認して、気になる目的地のスポットを選択しましょう。
+                </Text>
+              </View>
+            </CardComponent>
+
+            {/* チュートリアルステップ 2 */}
+            <CardComponent blurred={true} padding={SPACING.md} style={styles.tutorialCard}>
+              <View style={styles.stepHeader}>
+                <View style={styles.stepBadge}>
+                  <Text style={styles.stepBadgeText}>STEP 2</Text>
+                </View>
+                <Text style={styles.stepTitle}>マップを見ながら出発</Text>
+              </View>
+              <View style={styles.stepContent}>
+                <MaterialCommunityIcons name="navigation-variant-outline" size={32} color={COLORS.primary} />
+                <Text style={styles.stepDescription}>
+                  目的地を決めたらナビ画面へ。リアルタイムGPSで目的地までの距離と方角を確認しながら移動します。
+                </Text>
+              </View>
+            </CardComponent>
+
+            {/* チュートリアルステップ 3 */}
+            <CardComponent blurred={true} padding={SPACING.md} style={styles.tutorialCard}>
+              <View style={styles.stepHeader}>
+                <View style={styles.stepBadge}>
+                  <Text style={styles.stepBadgeText}>STEP 3</Text>
+                </View>
+                <Text style={styles.stepTitle}>現地到着でイベント判明！</Text>
+              </View>
+              <View style={styles.stepContent}>
+                <MaterialCommunityIcons name="party-popper" size={32} color={COLORS.primary} />
+                <Text style={styles.stepDescription}>
+                  目的地まで100m以内に近づくとイベント情報がアンロック！現地で待っている最高の体験を楽しみましょう 🎉
+                </Text>
+              </View>
+            </CardComponent>
+
+            {/* チュートリアルステップ 4 */}
+            <CardComponent blurred={true} padding={SPACING.md} style={styles.tutorialCard}>
+              <View style={styles.stepHeader}>
+                <View style={styles.stepBadge}>
+                  <Text style={styles.stepBadgeText}>STEP 4</Text>
+                </View>
+                <Text style={styles.stepTitle}>参加＆満足度の記録</Text>
+              </View>
+              <View style={styles.stepContent}>
+                <MaterialCommunityIcons name="star-outline" size={32} color={COLORS.primary} />
+                <Text style={styles.stepDescription}>
+                  イベント参加後は星評価で満足度を記録。記録された参加履歴はマイページに思い出として保存されます。
+                </Text>
+              </View>
+            </CardComponent>
+
+            {/* アクションボタン */}
+            <Pressable
+              style={styles.startEventButton}
+              onPress={handleFinishTutorial}
+            >
+              <MaterialCommunityIcons name="rocket-launch-outline" size={20} color={COLORS.onPrimary} />
+              <Text style={styles.startEventText}>さっそくイベントを探してみる</Text>
+            </Pressable>
+          </ScrollView>
         )}
       </ScreenContainer>
     </>
@@ -207,21 +327,21 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: COLORS.ink,
   },
-  newBadge: {
+  guideBadge: {
     position: 'absolute',
     top: -4,
-    right: -14,
+    right: -20,
     backgroundColor: COLORS.canvas,
     borderWidth: 1,
-    borderColor: COLORS.ink,
+    borderColor: COLORS.primary,
     paddingHorizontal: 4,
     paddingVertical: 1,
     borderRadius: BORDER_RADIUS.full,
   },
-  newBadgeText: {
-    fontSize: TYPOGRAPHY.uppercaseTag.fontSize,
-    fontWeight: TYPOGRAPHY.uppercaseTag.fontWeight,
-    color: COLORS.ink,
+  guideBadgeText: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: COLORS.primary,
   },
   accountButton: {
     flexDirection: 'row',
@@ -241,11 +361,8 @@ const styles = StyleSheet.create({
     color: COLORS.ink,
     maxWidth: 70,
   },
-  searchSection: {
-    marginVertical: SPACING.sm,
-  },
   sectionHeader: {
-    marginTop: SPACING.xs,
+    marginTop: SPACING.md,
     marginBottom: SPACING.md,
   },
   headline: {
@@ -262,6 +379,12 @@ const styles = StyleSheet.create({
   listContent: {
     paddingBottom: SPACING.xxl,
   },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: SPACING.xxl,
+  },
   emptyState: {
     flex: 1,
     justifyContent: 'center',
@@ -275,9 +398,62 @@ const styles = StyleSheet.create({
     color: COLORS.ink,
     marginTop: SPACING.sm,
   },
-  emptyStateSub: {
+  /* チュートリアルガイド表示用スタイル */
+  guideContainer: {
+    paddingBottom: SPACING.xxl,
+  },
+  tutorialCard: {
+    marginBottom: SPACING.md,
+  },
+  stepHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.sm,
+    marginBottom: SPACING.sm,
+  },
+  stepBadge: {
+    backgroundColor: COLORS.primary,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: BORDER_RADIUS.full,
+  },
+  stepBadgeText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: COLORS.onPrimary,
+  },
+  stepTitle: {
+    fontSize: TYPOGRAPHY.titleSm.fontSize,
+    fontWeight: '700',
+    color: COLORS.ink,
+  },
+  stepContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.md,
+  },
+  stepDescription: {
+    flex: 1,
     fontSize: TYPOGRAPHY.bodySm.fontSize,
-    color: COLORS.muted,
+    color: COLORS.body,
+    lineHeight: 20,
+  },
+  startEventButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: SPACING.xs,
+    backgroundColor: COLORS.primary,
+    paddingVertical: SPACING.md,
+    borderRadius: BORDER_RADIUS.md,
+    marginTop: SPACING.md,
+    marginBottom: SPACING.xl,
+    ...SHADOWS.md,
+  },
+  startEventText: {
+    fontSize: TYPOGRAPHY.titleSm.fontSize,
+    fontWeight: '700',
+    color: COLORS.onPrimary,
   },
 });
 

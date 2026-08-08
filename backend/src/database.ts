@@ -3,8 +3,11 @@ import { Pool } from "pg";
 export type EventRow = {
   id: string;
   name: string;
+  spotName?: string;
   date: string;
   time: string;
+  duration?: string;
+  cost?: string;
   location: string;
   distance: string;
   imageUri: string | null;

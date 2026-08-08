@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { UserProfile, loginApi, registerApi, logoutApi } from '../services/authApi';
+import { UserProfile, VisitedEventItem, loginApi, registerApi, logoutApi } from '../services/authApi';
 
 interface AuthContextType {
   user: UserProfile | null;
@@ -8,6 +8,8 @@ interface AuthContextType {
   login: (email: string, password: string) => Promise<void>;
   register: (name: string, email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
+  addVisitedEvent: (eventName: string, rating: number) => void;
+  completeTutorial: () => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -61,6 +63,45 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
+  const completeTutorial = () => {
+    setUser((prev) => {
+      if (!prev) return null;
+      return {
+        ...prev,
+        isFirstLogin: false,
+      };
+    });
+  };
+
+  const addVisitedEvent = (eventName: string, rating: number) => {
+    const newVisit: VisitedEventItem = {
+      id: `visited_${Date.now()}`,
+      eventName,
+      visitedDate: new Date().toLocaleDateString('ja-JP', {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+      }),
+      rating,
+    };
+
+    setUser((prev) => {
+      if (!prev) {
+        return {
+          id: 'usr_guest',
+          name: 'ゲストユーザー',
+          avatarUrl: null,
+          visitedEvents: [newVisit],
+          isFirstLogin: false,
+        };
+      }
+      return {
+        ...prev,
+        visitedEvents: [newVisit, ...prev.visitedEvents],
+      };
+    });
+  };
+
   return (
     <AuthContext.Provider
       value={{
@@ -70,6 +111,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         login,
         register,
         logout,
+        addVisitedEvent,
+        completeTutorial,
       }}
     >
       {children}

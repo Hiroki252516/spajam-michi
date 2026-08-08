@@ -15,6 +15,7 @@ export interface UserProfile {
   name: string;
   avatarUrl?: string | null;
   visitedEvents: VisitedEventItem[];
+  isFirstLogin?: boolean;
 }
 
 export interface AuthResponse {
@@ -42,6 +43,7 @@ const DUMMY_USER: UserProfile = {
   name: '山田 太郎',
   avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400',
   visitedEvents: DUMMY_VISITED_EVENTS,
+  isFirstLogin: false,
 };
 
 /**
@@ -63,6 +65,7 @@ export const loginApi = async (email: string, password?: string): Promise<AuthRe
     user: {
       ...DUMMY_USER,
       name: email.split('@')[0] || DUMMY_USER.name,
+      isFirstLogin: false,
     },
   };
 };
@@ -96,6 +99,7 @@ export const registerApi = async (
       name,
       avatarUrl: null,
       visitedEvents: [],
+      isFirstLogin: true,
     },
   };
 };
