@@ -1,0 +1,31 @@
+{
+    "name": "LED",
+    "version": "1.0.0",
+    "private": true,
+    "description": "タスク・担当者・進捗は Jira で管理する。",
+    "workspaces": [
+        "backend",
+        "frontend"
+    ],
+    "scripts": {
+        "test": "echo \"Error: no test specified\" && exit 1",
+        "dev:backend": "npm run dev -w backend",
+        "dev:frontend": "npm run start -w frontend",
+        "build": "npm run build --workspaces --if-present",
+        "typecheck": "npm run typecheck --workspaces --if-present",
+        "lint": "npm run lint --workspaces --if-present",
+        "lint:fix": "npm run lint:fix --workspaces --if-present",
+        "format": "npm run format --workspaces --if-present",
+        "format:check": "npm run format:check --workspaces --if-present",
+        "hooks:on": "git config core.hooksPath .githooks",
+        "hooks:off": "git config --unset core.hooksPath"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/LED-quattro/dev.git"
+    },
+    "keywords": [],
+    "author": "",
+    "license": "ISC",
+    "type": "commonjs"
+}

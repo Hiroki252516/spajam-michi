@@ -1,0 +1,11 @@
+.DS_Store
+.env
+.expo/
+node_modules/
+**/node_modules/
+**/dist/
+**/data/
+*.db
+*.db-shm
+*.db-wal
+*.log
