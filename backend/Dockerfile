@@ -29,7 +29,6 @@ FROM base AS production
 ENV NODE_ENV=production
 RUN npm ci --omit=dev -w backend
 WORKDIR /app/backend
-RUN mkdir -p ./data && chown node:node ./data
 COPY --chown=node:node --from=builder /app/backend/dist ./dist
 USER node
 EXPOSE 8080
