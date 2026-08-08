@@ -1,6 +1,6 @@
 import React from 'react';
 import { Pressable, PressableProps, Text, StyleSheet, ViewStyle, TextStyle } from 'react-native';
-import LinearGradient from 'react-native-linear-gradient';
+import { LinearGradient } from 'expo-linear-gradient';
 import { COLORS, TYPOGRAPHY, BORDER_RADIUS, SIZES, SHADOWS } from '../constants/design';
 
 interface GradientButtonProps extends PressableProps {
@@ -41,10 +41,7 @@ const GradientButton: React.FC<GradientButtonProps> = ({
       {...props}
     >
       <LinearGradient
-        colors={COLORS.gradient.start === COLORS.gradient.end ? 
-          [COLORS.gradient.start] : 
-          [COLORS.gradient.start, COLORS.gradient.end]
-        }
+        colors={[COLORS.gradient.start, COLORS.gradient.end]}
         start={GRADIENTS.primary.start}
         end={GRADIENTS.primary.end}
         style={[

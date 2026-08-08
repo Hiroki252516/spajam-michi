@@ -1,6 +1,6 @@
 import React from 'react';
 import { View, Text, Pressable, StyleSheet, ViewStyle, Image } from 'react-native';
-import { MaterialCommunityIcons } from 'expo-vector-icons';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import CardComponent from './CardComponent';
 import { COLORS, TYPOGRAPHY, SPACING, BORDER_RADIUS } from '../constants/design';
 

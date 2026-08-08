@@ -6,7 +6,7 @@ import {
   StyleSheet,
   StatusBar,
 } from 'react-native';
-import { MaterialCommunityIcons } from 'expo-vector-icons';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import ScreenContainer from '../components/ScreenContainer';
 import TextInputField from '../components/TextInputField';
 import EventCard, { EventCardData } from '../components/EventCard';

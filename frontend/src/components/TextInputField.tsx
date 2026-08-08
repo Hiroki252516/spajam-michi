@@ -8,7 +8,7 @@ import {
   ViewStyle,
   TextStyle,
 } from 'react-native';
-import { COLORS, TYPOGRAPHY, SPACING, SIZES } from '../constants/design';
+import { COLORS, TYPOGRAPHY, SPACING, SIZES, SHADOWS } from '../constants/design';
 
 interface TextInputFieldProps extends RNTextInputProps {
   placeholder?: string;

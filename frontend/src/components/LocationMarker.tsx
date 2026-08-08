@@ -1,6 +1,6 @@
 import React from 'react';
 import { View, ViewStyle, StyleSheet } from 'react-native';
-import { MaterialCommunityIcons } from 'expo-vector-icons';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { COLORS, SIZES, SHADOWS } from '../constants/design';
 
 interface LocationMarkerProps {

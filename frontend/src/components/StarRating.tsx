@@ -1,6 +1,6 @@
 import React from 'react';
 import { View, Pressable, StyleSheet, ViewStyle, Text } from 'react-native';
-import { MaterialCommunityIcons } from 'expo-vector-icons';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { COLORS, SPACING, SIZES, TYPOGRAPHY } from '../constants/design';
 
 interface StarRatingProps {

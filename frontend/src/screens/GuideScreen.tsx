@@ -7,7 +7,7 @@ import {
   Pressable,
   ActivityIndicator,
 } from 'react-native';
-import { MaterialCommunityIcons } from 'expo-vector-icons';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import MapView, { Marker } from 'react-native-maps';
 import ScreenContainer from '../components/ScreenContainer';
 import CardComponent from '../components/CardComponent';
