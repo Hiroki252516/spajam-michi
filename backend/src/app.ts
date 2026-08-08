@@ -2,22 +2,16 @@ import { randomUUID } from "node:crypto";
 
 import { Hono } from "hono";
 
+import { AuthService } from "./auth.js";
 import type { EventRow, EventStore } from "./database.js";
+import { ApiError } from "./errors.js";
 
-type ErrorStatus = 400 | 404 | 409 | 500;
-
-class ApiError extends Error {
-  constructor(
-    readonly status: ErrorStatus,
-    readonly code: string,
-    message: string,
-  ) {
-    super(message);
-  }
-}
-
-export function createApp(database: EventStore) {
+export function createApp(
+  database: EventStore,
+  options: { jwtSecret: string; enableDevelopmentEndpoints?: boolean },
+) {
   const app = new Hono();
+  const authService = new AuthService(database, options.jwtSecret);
 
   app.get("/", (context) =>
     context.json({ name: "LED Quattro API", status: "ok" }),
@@ -129,6 +123,44 @@ export function createApp(database: EventStore) {
     );
   });
 
+  app.post("/api/auth/register", async (context) => {
+    const body = await readRegisterBody(context.req.raw);
+    return context.json(
+      { status: "success", data: await authService.register(body) },
+      201,
+    );
+  });
+
+  app.post("/api/auth/login", async (context) => {
+    const body = await readLoginBody(context.req.raw);
+    return context.json({
+      status: "success",
+      data: await authService.login(body),
+    });
+  });
+
+  app.get("/api/auth/me", async (context) =>
+    context.json({
+      status: "success",
+      data: await authService.me(context.req.header("Authorization")),
+    }),
+  );
+
+  app.post("/api/auth/logout", async (context) => {
+    await authService.logout(context.req.header("Authorization"));
+    return context.json({
+      status: "success",
+      data: { message: "ログアウトしました。" },
+    });
+  });
+
+  if (options.enableDevelopmentEndpoints) {
+    app.post("/api/dev/reset", async (context) => {
+      await database.resetDevelopmentData();
+      return context.json({ status: "success", data: { reset: true } });
+    });
+  }
+
   app.notFound((context) =>
     context.json(errorResponse("NOT_FOUND", "リソースが見つかりません"), 404),
   );
@@ -220,6 +252,60 @@ async function readReviewBody(request: Request) {
     rating: Number(body.rating),
     comment: body.comment as string | undefined,
   };
+}
+
+async function readRegisterBody(request: Request) {
+  const body = await readObjectBody(request);
+  const name = typeof body.name === "string" ? body.name.trim() : "";
+  const email = typeof body.email === "string" ? body.email.trim() : "";
+  const password = typeof body.password === "string" ? body.password : "";
+  if (!name || name.length > 100) {
+    throw validationError("お名前を入力してください。");
+  }
+  if (!isValidEmail(email)) {
+    throw validationError("有効なメールアドレスを入力してください。");
+  }
+  validatePassword(password);
+  return { name, email, password };
+}
+
+async function readLoginBody(request: Request) {
+  const body = await readObjectBody(request);
+  const email = typeof body.email === "string" ? body.email.trim() : "";
+  const password = typeof body.password === "string" ? body.password : "";
+  if (!isValidEmail(email) || !password) {
+    throw validationError("メールアドレスとパスワードを入力してください。");
+  }
+  return { email, password };
+}
+
+async function readObjectBody(request: Request) {
+  try {
+    const value: unknown = await request.json();
+    if (value && typeof value === "object") {
+      return value as Record<string, unknown>;
+    }
+  } catch {
+    // The common validation error below is returned for malformed JSON.
+  }
+  throw validationError("リクエスト形式が不正です。");
+}
+
+function validatePassword(password: string) {
+  if (password.length < 4) {
+    throw validationError("パスワードは4文字以上で入力してください。");
+  }
+  if (password.length > 128) {
+    throw validationError("パスワードは128文字以内で入力してください。");
+  }
+}
+
+function isValidEmail(value: string) {
+  return value.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+function validationError(message: string) {
+  return new ApiError(400, "VALIDATION_ERROR", message);
 }
 
 function errorResponse(code: string, message: string) {
