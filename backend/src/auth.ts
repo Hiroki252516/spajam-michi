@@ -84,7 +84,7 @@ export class AuthService {
       .sign(this.jwtKey);
   }
 
-  private async authenticate(authorization: string | undefined) {
+  async authenticate(authorization: string | undefined) {
     if (!authorization?.startsWith("Bearer ")) throw unauthorized();
     const { errors: joseErrors, jwtVerify } = await import("jose");
     try {

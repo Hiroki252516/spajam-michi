@@ -5,10 +5,22 @@ import { Hono } from "hono";
 import { AuthService } from "./auth.js";
 import type { EventRow, EventStore } from "./database.js";
 import { ApiError } from "./errors.js";
+import { LocationResolutionError } from "./geocoding.js";
+import {
+  RoutingUnavailableError,
+  type EventSearchResult,
+  type EventRecommendationService,
+} from "./recommendation.js";
+import { SearchTimingCollector } from "./search-timing.js";
 
 export function createApp(
   database: EventStore,
-  options: { jwtSecret: string; enableDevelopmentEndpoints?: boolean },
+  options: {
+    jwtSecret: string;
+    recommendationService: EventRecommendationService;
+    enableSearchTimingDebug?: boolean;
+    enableDevelopmentEndpoints?: boolean;
+  },
 ) {
   const app = new Hono();
   const authService = new AuthService(database, options.jwtSecret);
@@ -29,26 +41,134 @@ export function createApp(
   });
 
   app.get("/api/events/search", async (context) => {
-    const query = context.req.query("q")?.trim();
-    if (!query) {
+    let userId: string;
+    try {
+      ({ userId } = await authService.authenticate(
+        context.req.header("Authorization"),
+      ));
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        throw new ApiError(
+          401,
+          "AUTHENTICATION_REQUIRED",
+          "イベント検索にはログインが必要です。",
+        );
+      }
+      throw error;
+    }
+    const debugRequested = parseSearchTimingDebug(
+      context.req.query("debug"),
+      options.enableSearchTimingDebug ?? false,
+    );
+    const latitude = parseCoordinate(context.req.query("latitude"), "latitude");
+    const longitude = parseCoordinate(
+      context.req.query("longitude"),
+      "longitude",
+    );
+    const query = context.req.query("q")?.trim() || "イベント";
+    if (query.length > 100) {
+      throw new ApiError(400, "INVALID_QUERY", "検索キーワードが長すぎます");
+    }
+    const limit = parseInteger(context.req.query("limit"), 20, 1, 20);
+    const offset = parseInteger(context.req.query("offset"), 0, 0, 1_000_000);
+    const jobId = `search-${randomUUID()}`;
+    const job = await database.createEventSearchJob({
+      id: jobId,
+      userId,
+      query,
+      limit,
+      offset,
+      debugRequested,
+      expiresAt: new Date(Date.now() + 30 * 60_000),
+    });
+    void runEventSearchJob({
+      database,
+      recommendationService: options.recommendationService,
+      jobId,
+      userId,
+      query,
+      latitude,
+      longitude,
+      limit,
+      offset,
+      debugRequested,
+    });
+
+    return context.json(
+      {
+        status: "success",
+        data: {
+          jobId,
+          status: "queued" as const,
+          pollUrl: `/api/events/search/jobs/${jobId}`,
+          expiresAt: job.expiresAt.toISOString(),
+        },
+      },
+      202,
+    );
+  });
+
+  app.get("/api/events/search/jobs/:jobId", async (context) => {
+    let userId: string;
+    try {
+      ({ userId } = await authService.authenticate(
+        context.req.header("Authorization"),
+      ));
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        throw new ApiError(
+          401,
+          "AUTHENTICATION_REQUIRED",
+          "イベント検索結果の取得にはログインが必要です。",
+        );
+      }
+      throw error;
+    }
+    const job = await database.findEventSearchJob(
+      context.req.param("jobId"),
+      userId,
+    );
+    if (!job) {
       throw new ApiError(
-        400,
-        "INVALID_QUERY",
-        "検索キーワードが入力されていません",
+        404,
+        "SEARCH_JOB_NOT_FOUND",
+        "検索ジョブが見つからないか、有効期限が切れています。",
       );
     }
-    const limit = parseInteger(context.req.query("limit"), 20, 1, 100);
-    const offset = parseInteger(context.req.query("offset"), 0, 0, 1_000_000);
-    const result = await database.searchEvents({ query, limit, offset });
-
+    if (job.status === "succeeded") {
+      const result = job.result as EventSearchResult;
+      return context.json({
+        status: "success",
+        data: {
+          jobId: job.id,
+          status: job.status,
+          events: result.events.map(toEventSummary),
+          total: result.total,
+          limit: job.limit,
+          offset: job.offset,
+          meta: result.meta,
+        },
+      });
+    }
+    if (job.status === "failed") {
+      return context.json({
+        status: "success",
+        data: {
+          jobId: job.id,
+          status: job.status,
+          error: {
+            code: job.errorCode ?? "EVENT_SEARCH_FAILED",
+            message: job.errorMessage ?? "イベント検索を完了できませんでした。",
+          },
+          ...(job.debugRequested && job.debugTimings
+            ? { debugTimings: job.debugTimings }
+            : {}),
+        },
+      });
+    }
     return context.json({
       status: "success",
-      data: {
-        events: result.events.map(toEventSummary),
-        total: result.total,
-        limit,
-        offset,
-      },
+      data: { jobId: job.id, status: job.status },
     });
   });
 
@@ -89,7 +209,8 @@ export function createApp(
 
   app.post("/api/reviews", async (context) => {
     const body = await readReviewBody(context.req.raw);
-    if (!(await database.eventExists(body.eventId))) {
+    const event = await database.findEvent(body.eventId);
+    if (!event) {
       throw new ApiError(
         404,
         "EVENT_NOT_FOUND",
@@ -105,6 +226,11 @@ export function createApp(
         "このユーザーはすでにこのイベントをレビュー済みです",
       );
     }
+    void options.recommendationService
+      .indexReview(review, event)
+      .catch((error) => {
+        console.error("Review preference indexing failed", error);
+      });
 
     return context.json(
       {
@@ -182,6 +308,87 @@ export function createApp(
   return app;
 }
 
+async function runEventSearchJob(input: {
+  database: EventStore;
+  recommendationService: EventRecommendationService;
+  jobId: string;
+  userId: string;
+  query: string;
+  latitude: number;
+  longitude: number;
+  limit: number;
+  offset: number;
+  debugRequested: boolean;
+}) {
+  const timings = input.debugRequested
+    ? new SearchTimingCollector(input.jobId)
+    : undefined;
+  try {
+    await input.database.markEventSearchJobRunning(input.jobId, input.userId);
+    const result = await input.recommendationService.search({
+      userId: input.userId,
+      query: input.query,
+      latitude: input.latitude,
+      longitude: input.longitude,
+      limit: input.limit,
+      offset: input.offset,
+      timings,
+    });
+    const debugTimings = timings?.snapshot() ?? null;
+    if (debugTimings) {
+      result.meta.debugTimings = debugTimings;
+      timings!.logSummary("succeeded", debugTimings);
+    }
+    await input.database.completeEventSearchJob(
+      input.jobId,
+      input.userId,
+      result,
+      debugTimings,
+    );
+  } catch (error) {
+    let errorCode = "EVENT_SEARCH_FAILED";
+    let errorMessage = "イベント検索を完了できませんでした。";
+    if (error instanceof RoutingUnavailableError) {
+      errorCode = "ROUTING_UNAVAILABLE";
+      errorMessage =
+        "現在、移動時間を計算できません。しばらくしてからお試しください。";
+    } else if (error instanceof LocationResolutionError) {
+      errorCode = "LOCATION_RESOLUTION_UNAVAILABLE";
+      errorMessage =
+        "DuckDuckGoの検索結果から現在地の地域名を確認できませんでした。";
+    }
+    const debugTimings = timings?.snapshot() ?? null;
+    if (debugTimings) timings!.logSummary("failed", debugTimings);
+    console.error("Asynchronous event search failed", error);
+    await input.database.failEventSearchJob(
+      input.jobId,
+      input.userId,
+      errorCode,
+      errorMessage,
+      debugTimings,
+    );
+  }
+}
+
+function parseSearchTimingDebug(value: string | undefined, enabled: boolean) {
+  if (value === undefined) return false;
+  if (value !== "timings") {
+    throw new ApiError(
+      400,
+      "INVALID_DEBUG_MODE",
+      "debugにはtimingsを指定してください。",
+    );
+  }
+  if (!enabled) {
+    throw new ApiError(
+      403,
+      "DEBUG_TIMINGS_DISABLED",
+      "イベント検索のデバッグ計測は無効です。",
+    );
+  }
+  return true;
+}
+
 function toEventSummary(event: EventRow) {
   return {
     id: event.id,
@@ -197,7 +404,40 @@ function toEventSummary(event: EventRow) {
       latitude: event.latitude,
       longitude: event.longitude,
     },
+    ...(isRecommendedEvent(event)
+      ? {
+          sourceUrl: event.sourceUrl,
+          travelMode: event.travelMode,
+          travelDurationMinutes: event.travelDurationMinutes,
+          recommendationReason: event.recommendationReason,
+        }
+      : {}),
   };
+}
+
+function isRecommendedEvent(event: EventRow): event is EventRow & {
+  travelMode: "TRANSIT" | "WALK";
+  travelDurationMinutes: number;
+  recommendationReason: string;
+} {
+  return "travelMode" in event;
+}
+
+function parseCoordinate(
+  value: string | undefined,
+  type: "latitude" | "longitude",
+) {
+  const parsed = value === undefined ? Number.NaN : Number(value);
+  const minimum = type === "latitude" ? -90 : -180;
+  const maximum = type === "latitude" ? 90 : 180;
+  if (!Number.isFinite(parsed) || parsed < minimum || parsed > maximum) {
+    throw new ApiError(
+      400,
+      "LOCATION_REQUIRED",
+      "現在地の緯度・経度を正しく指定してください。",
+    );
+  }
+  return parsed;
 }
 
 function parseInteger(

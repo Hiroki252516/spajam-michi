@@ -1,6 +1,6 @@
 services:
   db:
-    image: postgres:17-alpine
+    image: pgvector/pgvector:pg17
     ports:
       - "${POSTGRES_PORT}:5432"
     environment:
@@ -26,6 +26,16 @@ services:
       PORT: "8080"
       DATABASE_URL: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}"
       JWT_SECRET: "${JWT_SECRET}"
+      OLLAMA_BASE_URL: "${OLLAMA_BASE_URL:-http://host.docker.internal:11434}"
+      OLLAMA_CHAT_MODEL: "${OLLAMA_CHAT_MODEL:-gemma4:e2b}"
+      OLLAMA_EMBEDDING_MODEL: "${OLLAMA_EMBEDDING_MODEL:-embeddinggemma:300m-qat-q4_0}"
+      TRANSIT_API_BASE_URL: "${TRANSIT_API_BASE_URL:-https://api.transit.ls8h.com}"
+      EVENT_SEARCH_JOB_TIMEOUT_MS: "${EVENT_SEARCH_JOB_TIMEOUT_MS:-120000}"
+      EVENT_PAGE_TIMEOUT_MS: "${EVENT_PAGE_TIMEOUT_MS:-5000}"
+      EVENT_SEARCH_CACHE_TTL_MS: "${EVENT_SEARCH_CACHE_TTL_MS:-900000}"
+      EVENT_SEARCH_DEBUG_TIMINGS: "${EVENT_SEARCH_DEBUG_TIMINGS:-false}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       db:
         condition: service_healthy

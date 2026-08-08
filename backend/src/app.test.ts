@@ -7,9 +7,12 @@ import { createApp } from "./app.js";
 import type {
   AuthSessionRow,
   EventRow,
+  EventSearchJobRow,
   EventStore,
   UserRow,
 } from "./database.js";
+import type { EventRecommendationService } from "./recommendation.js";
+import { RoutingUnavailableError } from "./recommendation.js";
 
 const JWT_SECRET = "test-jwt-secret-that-is-at-least-32-characters";
 
@@ -30,6 +33,9 @@ const events: EventRow[] = [
     longitude: 139.7004,
     organizerName: "SPAJAM運営事務局",
     organizerContactEmail: "info@example.com",
+    sourceUrl: "https://example.com/events/1",
+    startsAt: new Date("2026-08-08T00:00:00Z"),
+    endsAt: new Date("2026-08-08T00:30:00Z"),
   },
   {
     id: "2",
@@ -47,6 +53,9 @@ const events: EventRow[] = [
     longitude: 139.7017,
     organizerName: "SPAJAM運営事務局",
     organizerContactEmail: "info@example.com",
+    sourceUrl: "https://example.com/events/2",
+    startsAt: new Date("2026-08-08T01:00:00Z"),
+    endsAt: new Date("2026-08-08T02:30:00Z"),
   },
 ];
 
@@ -57,12 +66,17 @@ describe("frontend API", () => {
   let resetCount: number;
   let users: Map<string, UserRow>;
   let sessions: Map<string, AuthSessionRow>;
+  let searchJobs: Map<string, EventSearchJobRow>;
+  let recommendationService: EventRecommendationService;
+  let recommendationSearchCount: number;
 
   beforeEach(() => {
     reviewCreated = false;
     resetCount = 0;
     users = new Map();
     sessions = new Map();
+    searchJobs = new Map();
+    recommendationSearchCount = 0;
     store = {
       health: async () => "PostgreSQL test",
       searchEvents: async ({ query, limit, offset }) => {
@@ -124,10 +138,98 @@ describe("frontend API", () => {
         if (session) session.revokedAt = new Date();
       },
       listVisitedEvents: async () => [],
+      upsertDiscoveredEvents: async () => [],
+      listActiveEvents: async () => [],
+      setEventEmbedding: async () => undefined,
+      savePreferenceMemory: async () => undefined,
+      listPreferenceMemories: async () => [],
+      findSimilarPreferenceMemories: async () => [],
+      getDiscoveryCache: async () => null,
+      setDiscoveryCache: async () => undefined,
+      recordRecommendationLog: async () => undefined,
+      createEventSearchJob: async (input) => {
+        const now = new Date();
+        const job: EventSearchJobRow = {
+          ...input,
+          status: "queued",
+          result: null,
+          debugTimings: null,
+          errorCode: null,
+          errorMessage: null,
+          createdAt: now,
+          updatedAt: now,
+        };
+        searchJobs.set(job.id, job);
+        return job;
+      },
+      markEventSearchJobRunning: async (jobId, userId) => {
+        const job = searchJobs.get(jobId);
+        if (job?.userId === userId) job.status = "running";
+      },
+      completeEventSearchJob: async (jobId, userId, result, debugTimings) => {
+        const job = searchJobs.get(jobId);
+        if (job?.userId === userId) {
+          job.status = "succeeded";
+          job.result = result;
+          job.debugTimings = debugTimings;
+        }
+      },
+      failEventSearchJob: async (
+        jobId,
+        userId,
+        errorCode,
+        errorMessage,
+        debugTimings,
+      ) => {
+        const job = searchJobs.get(jobId);
+        if (job?.userId === userId) {
+          job.status = "failed";
+          job.errorCode = errorCode;
+          job.errorMessage = errorMessage;
+          job.debugTimings = debugTimings;
+        }
+      },
+      findEventSearchJob: async (jobId, userId) => {
+        const job = searchJobs.get(jobId);
+        return job?.userId === userId ? job : null;
+      },
       close: async () => undefined,
+    };
+    recommendationService = {
+      search: async ({ query, limit, offset }) => {
+        recommendationSearchCount += 1;
+        const matches = events.filter(
+          (event) =>
+            query === "イベント" ||
+            event.name.includes(query) ||
+            event.location.includes(query) ||
+            event.description.includes(query),
+        );
+        return {
+          events: matches.slice(offset, offset + limit).map((event) => ({
+            ...event,
+            travelMode: "WALK" as const,
+            travelDurationMinutes: 25,
+            recommendationReason: "徒歩圏内で関心に近いイベントです。",
+          })),
+          total: matches.length,
+          meta: {
+            personalized: false,
+            source: "live" as const,
+            generatedAt: "2026-08-08T00:00:00.000Z",
+            routingProvider: "transit_api" as const,
+            geocodingProvider: "gsi" as const,
+            currentLocationProvider: "duckduckgo" as const,
+            degradedReasons: [],
+            travelAdvisory: "Transit APIによる所要時間です。",
+          },
+        };
+      },
+      indexReview: async () => undefined,
     };
     app = createApp(store, {
       jwtSecret: JWT_SECRET,
+      recommendationService,
       enableDevelopmentEndpoints: true,
     });
   });
@@ -146,16 +248,30 @@ describe("frontend API", () => {
   });
 
   it("searches events with pagination", async () => {
+    const token = await registerAndGetToken();
     const response = await app.request(
-      "/api/events/search?q=React%20Native&limit=10&offset=0",
+      "/api/events/search?q=React%20Native&latitude=35.6595&longitude=139.7004&limit=10&offset=0",
+      { headers: { Authorization: `Bearer ${token}` } },
     );
-    assert.equal(response.status, 200);
-    const body = (await response.json()) as {
+    assert.equal(response.status, 202);
+    const accepted = (await response.json()) as {
+      data: { jobId: string; status: string };
+    };
+    assert.equal(accepted.data.status, "queued");
+    const result = await pollSearchJob(token, accepted.data.jobId);
+    const body = result as {
       status: string;
-      data: { events: { id: string; name: string }[]; total: number };
+      data: {
+        status: string;
+        events: { id: string; name: string }[];
+        total: number;
+        meta: Record<string, unknown>;
+      };
     };
     assert.equal(body.status, "success");
+    assert.equal(body.data.status, "succeeded");
     assert.equal(body.data.total, 1);
+    assert.equal("debugTimings" in body.data.meta, false);
     assert.deepEqual(body.data.events[0], {
       id: "2",
       name: "React Native ワークショップ",
@@ -167,18 +283,184 @@ describe("frontend API", () => {
       rating: 0,
       description: "React Nativeを使ったモバイル開発の基礎を学べます。",
       coordinates: { latitude: 35.6612, longitude: 139.7017 },
+      sourceUrl: "https://example.com/events/2",
+      travelMode: "WALK",
+      travelDurationMinutes: 25,
+      recommendationReason: "徒歩圏内で関心に近いイベントです。",
     });
   });
 
-  it("rejects an empty search query", async () => {
-    const response = await app.request("/api/events/search?q=");
+  it("requires authentication before calling recommendation dependencies", async () => {
+    const response = await app.request(
+      "/api/events/search?latitude=35.6595&longitude=139.7004&debug=timings",
+    );
+    assert.equal(response.status, 401);
+    const body = (await response.json()) as {
+      status: string;
+      error: { code: string };
+    };
+    assert.equal(body.error.code, "AUTHENTICATION_REQUIRED");
+    assert.equal(recommendationSearchCount, 0);
+  });
+
+  it("rejects invalid and expired search sessions before dependencies", async () => {
+    const invalid = await app.request(
+      "/api/events/search?latitude=35.6595&longitude=139.7004",
+      { headers: { Authorization: "Bearer invalid-token" } },
+    );
+    assert.equal(invalid.status, 401);
+    assert.equal(recommendationSearchCount, 0);
+
+    const token = await registerAndGetToken();
+    const session = sessions.values().next().value as
+      AuthSessionRow | undefined;
+    assert.ok(session);
+    session.expiresAt = new Date(0);
+    const expired = await app.request(
+      "/api/events/search?latitude=35.6595&longitude=139.7004",
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+    assert.equal(expired.status, 401);
+    const body = (await expired.json()) as { error: { code: string } };
+    assert.equal(body.error.code, "AUTHENTICATION_REQUIRED");
+    assert.equal(recommendationSearchCount, 0);
+  });
+
+  it("requires valid coordinates after authentication", async () => {
+    const token = await registerAndGetToken();
+    const response = await app.request("/api/events/search", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
     assert.equal(response.status, 400);
     const body = (await response.json()) as {
       status: string;
       error: { code: string };
     };
     assert.equal(body.status, "error");
-    assert.equal(body.error.code, "INVALID_QUERY");
+    assert.equal(body.error.code, "LOCATION_REQUIRED");
+    assert.equal(recommendationSearchCount, 0);
+  });
+
+  it("rejects disabled and invalid timing debug requests before creating a job", async () => {
+    const token = await registerAndGetToken();
+    const disabled = await app.request(
+      "/api/events/search?latitude=35.6595&longitude=139.7004&debug=timings",
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+    assert.equal(disabled.status, 403);
+    assert.equal(
+      ((await disabled.json()) as { error: { code: string } }).error.code,
+      "DEBUG_TIMINGS_DISABLED",
+    );
+
+    const debugApp = createApp(store, {
+      jwtSecret: JWT_SECRET,
+      recommendationService,
+      enableSearchTimingDebug: true,
+    });
+    const invalid = await debugApp.request(
+      "/api/events/search?latitude=35.6595&longitude=139.7004&debug=verbose",
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+    assert.equal(invalid.status, 400);
+    assert.equal(
+      ((await invalid.json()) as { error: { code: string } }).error.code,
+      "INVALID_DEBUG_MODE",
+    );
+    assert.equal(searchJobs.size, 0);
+    assert.equal(recommendationSearchCount, 0);
+  });
+
+  it("returns all six timing stages only for an enabled debug search", async () => {
+    const token = await registerAndGetToken();
+    const debugApp = createApp(store, {
+      jwtSecret: JWT_SECRET,
+      recommendationService,
+      enableSearchTimingDebug: true,
+    });
+    const response = await debugApp.request(
+      "/api/events/search?latitude=35.6595&longitude=139.7004&debug=timings",
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+    assert.equal(response.status, 202);
+    const accepted = (await response.json()) as { data: { jobId: string } };
+    const body = (await pollSearchJob(
+      token,
+      accepted.data.jobId,
+      debugApp,
+    )) as {
+      data: {
+        meta: {
+          debugTimings: {
+            version: number;
+            unit: string;
+            totalMs: number;
+            stages: Record<string, { status: string }>;
+          };
+        };
+      };
+    };
+    const timings = body.data.meta.debugTimings;
+    assert.equal(timings.version, 1);
+    assert.equal(timings.unit, "ms");
+    assert.ok(timings.totalMs >= 0);
+    assert.deepEqual(Object.keys(timings.stages).sort(), [
+      "duckDuckGoSearch",
+      "eventPageFetch",
+      "gemmaAnalysis",
+      "gsiGeocoding",
+      "ragRecommendation",
+      "transitRouting",
+    ]);
+  });
+
+  it("returns partial timing data when a debug search fails", async () => {
+    const token = await registerAndGetToken();
+    recommendationService.search = async () => {
+      throw new RoutingUnavailableError("Transit API unavailable");
+    };
+    const debugApp = createApp(store, {
+      jwtSecret: JWT_SECRET,
+      recommendationService,
+      enableSearchTimingDebug: true,
+    });
+    const response = await debugApp.request(
+      "/api/events/search?latitude=35.6595&longitude=139.7004&debug=timings",
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+    const accepted = (await response.json()) as { data: { jobId: string } };
+    const body = (await pollSearchJob(
+      token,
+      accepted.data.jobId,
+      debugApp,
+    )) as {
+      data: {
+        status: string;
+        error: { code: string };
+        debugTimings: { stages: Record<string, unknown> };
+      };
+    };
+    assert.equal(body.data.status, "failed");
+    assert.equal(body.data.error.code, "ROUTING_UNAVAILABLE");
+    assert.equal(Object.keys(body.data.debugTimings.stages).length, 6);
+  });
+
+  it("records a stable failure when route calculation is unavailable", async () => {
+    const token = await registerAndGetToken();
+    recommendationService.search = async () => {
+      throw new RoutingUnavailableError("Transit API unavailable");
+    };
+    const response = await app.request(
+      "/api/events/search?latitude=35.6595&longitude=139.7004",
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+    assert.equal(response.status, 202);
+    const accepted = (await response.json()) as { data: { jobId: string } };
+    const body = (await pollSearchJob(token, accepted.data.jobId)) as {
+      data: { status: string; error: { code: string } };
+    };
+    assert.equal(body.data.status, "failed");
+    assert.equal(body.data.error.code, "ROUTING_UNAVAILABLE");
   });
 
   it("returns event details", async () => {
@@ -234,7 +516,10 @@ describe("frontend API", () => {
   });
 
   it("does not expose the reset endpoint outside development", async () => {
-    const productionApp = createApp(store, { jwtSecret: JWT_SECRET });
+    const productionApp = createApp(store, {
+      jwtSecret: JWT_SECRET,
+      recommendationService,
+    });
     const response = await productionApp.request("/api/dev/reset", {
       method: "POST",
     });
@@ -335,5 +620,35 @@ describe("frontend API", () => {
         password: "Password123!",
       }),
     });
+  }
+
+  async function registerAndGetToken() {
+    const response = await registerUser();
+    const body = (await response.json()) as { data: { token: string } };
+    return body.data.token;
+  }
+
+  async function pollSearchJob(
+    token: string,
+    jobId: string,
+    targetApp: Hono = app,
+  ): Promise<unknown> {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const response = await targetApp.request(
+        `/api/events/search/jobs/${jobId}`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+        },
+      );
+      assert.equal(response.status, 200);
+      const body = (await response.json()) as {
+        data: { status: string };
+      };
+      if (body.data.status === "succeeded" || body.data.status === "failed") {
+        return body;
+      }
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    assert.fail("search job did not finish");
   }
 });
