@@ -5,31 +5,39 @@ import {
   Text,
   StyleSheet,
   StatusBar,
+  Pressable,
 } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import ScreenContainer from '../components/ScreenContainer';
-import TextInputField from '../components/TextInputField';
+import SearchBarPill from '../components/SearchBarPill';
 import EventCard, { EventCardData } from '../components/EventCard';
-import GradientButton from '../components/GradientButton';
-import { COLORS, TYPOGRAPHY, SPACING } from '../constants/design';
+import { COLORS, TYPOGRAPHY, SPACING, BORDER_RADIUS, SHADOWS } from '../constants/design';
 import { searchEvents } from '../constants/dummyData';
+import { useAuth } from '../context/AuthContext';
 
 interface SearchScreenProps {
   onEventSelect: (eventId: string, eventName: string) => void;
+  onOpenLogin: () => void;
+  onOpenMyPage: () => void;
 }
 
 /**
  * SearchScreen - イベント検索・一覧表示画面
- * test_modelの検索画面を再現
+ * DESIGN.md: Warm Marketplace (Stays/Experiences/Services タブ, ピル型検索バー, Photo-first カード, アカウント導線)
  */
-const SearchScreen: React.FC<SearchScreenProps> = ({ onEventSelect }) => {
+const SearchScreen: React.FC<SearchScreenProps> = ({
+  onEventSelect,
+  onOpenLogin,
+  onOpenMyPage,
+}) => {
+  const { isLoggedIn, user } = useAuth();
+  const [activeTab, setActiveTab] = useState<'events' | 'experiences' | 'services'>('events');
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearching, setIsSearching] = useState(false);
 
   const handleSearch = () => {
     setIsSearching(true);
-    // ダミー遅延（本物のAPI呼び出しをシミュレート）
-    setTimeout(() => setIsSearching(false), 300);
+    setTimeout(() => setIsSearching(false), 200);
   };
 
   const filteredEvents = searchEvents(searchQuery);
@@ -40,39 +48,99 @@ const SearchScreen: React.FC<SearchScreenProps> = ({ onEventSelect }) => {
 
   return (
     <>
-      <StatusBar barStyle="dark-content" backgroundColor={COLORS.background.primary} />
-      <ScreenContainer scrollable={false} keyboardAvoid={true}>
-        {/* ヘッダー */}
-        <View style={styles.header}>
-          <Text style={styles.title}>イベント検索</Text>
-          <Text style={styles.subtitle}>周辺のイベントを探索</Text>
-        </View>
-
-        {/* 検索フォーム */}
-        <View style={styles.searchSection}>
-          <TextInputField
-            placeholder="イベント名・場所で検索..."
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            icon={
+      <StatusBar barStyle="dark-content" backgroundColor={COLORS.canvas} />
+      <ScreenContainer scrollable={false} keyboardAvoid={true} horizontalPadding={SPACING.base}>
+        {/* トッププロダクトナビゲーション + アカウントボタン (DESIGN.md top-nav) */}
+        <View style={styles.headerRow}>
+          <View style={styles.navBar}>
+            <Pressable
+              onPress={() => setActiveTab('events')}
+              style={[styles.tabItem, activeTab === 'events' && styles.tabItemActive]}
+            >
               <MaterialCommunityIcons
-                name="magnify"
-                size={20}
-                color={COLORS.text.secondary}
+                name="calendar-multiselect"
+                size={22}
+                color={activeTab === 'events' ? COLORS.ink : COLORS.muted}
               />
-            }
-          />
+              <Text style={[styles.tabLabel, activeTab === 'events' && styles.tabLabelActive]}>
+                イベント
+              </Text>
+            </Pressable>
 
-          <GradientButton
-            title="検索"
-            onPress={handleSearch}
-            disabled={isSearching || !searchQuery.trim()}
-            size="md"
-            style={styles.searchButton}
+            <Pressable
+              onPress={() => setActiveTab('experiences')}
+              style={[styles.tabItem, activeTab === 'experiences' && styles.tabItemActive]}
+            >
+              <View style={styles.tabIconWrapper}>
+                <MaterialCommunityIcons
+                  name="ticket-confirmation-outline"
+                  size={22}
+                  color={activeTab === 'experiences' ? COLORS.ink : COLORS.muted}
+                />
+                <View style={styles.newBadge}>
+                  <Text style={styles.newBadgeText}>NEW</Text>
+                </View>
+              </View>
+              <Text style={[styles.tabLabel, activeTab === 'experiences' && styles.tabLabelActive]}>
+                体験
+              </Text>
+            </Pressable>
+
+            <Pressable
+              onPress={() => setActiveTab('services')}
+              style={[styles.tabItem, activeTab === 'services' && styles.tabItemActive]}
+            >
+              <View style={styles.tabIconWrapper}>
+                <MaterialCommunityIcons
+                  name="compass-outline"
+                  size={22}
+                  color={activeTab === 'services' ? COLORS.ink : COLORS.muted}
+                />
+                <View style={styles.newBadge}>
+                  <Text style={styles.newBadgeText}>NEW</Text>
+                </View>
+              </View>
+              <Text style={[styles.tabLabel, activeTab === 'services' && styles.tabLabelActive]}>
+                ガイド
+              </Text>
+            </Pressable>
+          </View>
+
+          {/* アカウント・マイページボタン (DESIGN.md icon-button-outline) */}
+          <Pressable
+            onPress={isLoggedIn ? onOpenMyPage : onOpenLogin}
+            style={styles.accountButton}
+          >
+            <MaterialCommunityIcons
+              name={isLoggedIn ? 'account-circle' : 'account-circle-outline'}
+              size={24}
+              color={isLoggedIn ? COLORS.primary : COLORS.ink}
+            />
+            {isLoggedIn && (
+              <Text style={styles.accountButtonText} numberOfLines={1}>
+                {user?.name?.split(' ')[0] || 'マイページ'}
+              </Text>
+            )}
+          </Pressable>
+        </View>
+
+        {/* ピル型グローバル検索バー (DESIGN.md search-bar-pill) */}
+        <View style={styles.searchSection}>
+          <SearchBarPill
+            query={searchQuery}
+            onChangeQuery={setSearchQuery}
+            onSearch={handleSearch}
+            isSearching={isSearching}
           />
         </View>
 
-        {/* イベント一覧 */}
+        {/* 見出し */}
+        <View style={styles.sectionHeader}>
+          <Text style={styles.headline}>Find your next getaway</Text>
+          <Text style={styles.subheadline}>近くで開催される注目のイベント</Text>
+        </View>
+
+        {/* イベント一覧 (DESIGN.md property-card) */}
         {filteredEvents.length > 0 ? (
           <FlatList
             data={filteredEvents}
@@ -90,15 +158,12 @@ const SearchScreen: React.FC<SearchScreenProps> = ({ onEventSelect }) => {
         ) : (
           <View style={styles.emptyState}>
             <MaterialCommunityIcons
-              name="magnify"
+              name="magnify-remove-outline"
               size={48}
-              color={COLORS.text.tertiary}
+              color={COLORS.mutedSoft}
             />
-            <Text style={styles.emptyStateText}>
-              {searchQuery.trim()
-                ? 'イベントが見つかりませんでした'
-                : 'イベントを検索してください'}
-            </Text>
+            <Text style={styles.emptyStateTitle}>イベントが見つかりませんでした</Text>
+            <Text style={styles.emptyStateSub}>キーワードを変えて検索してみてください</Text>
           </View>
         )}
       </ScreenContainer>
@@ -107,38 +172,112 @@ const SearchScreen: React.FC<SearchScreenProps> = ({ onEventSelect }) => {
 };
 
 const styles = StyleSheet.create({
-  header: {
-    paddingBottom: SPACING.lg,
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: SPACING.xs,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.hairlineSoft,
   },
-  title: {
-    fontSize: TYPOGRAPHY.heading.size,
-    fontWeight: TYPOGRAPHY.heading.weight,
-    color: COLORS.text.primary,
-    marginBottom: SPACING.sm,
+  navBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.lg,
   },
-  subtitle: {
-    fontSize: TYPOGRAPHY.body.small.size,
-    color: COLORS.text.secondary,
+  tabItem: {
+    alignItems: 'center',
+    paddingBottom: SPACING.xs,
+    borderBottomWidth: 2,
+    borderBottomColor: 'transparent',
+  },
+  tabItemActive: {
+    borderBottomColor: COLORS.ink,
+  },
+  tabIconWrapper: {
+    position: 'relative',
+  },
+  tabLabel: {
+    fontSize: TYPOGRAPHY.navLink.fontSize,
+    fontWeight: '500',
+    color: COLORS.muted,
+    marginTop: 2,
+  },
+  tabLabelActive: {
+    fontWeight: '600',
+    color: COLORS.ink,
+  },
+  newBadge: {
+    position: 'absolute',
+    top: -4,
+    right: -14,
+    backgroundColor: COLORS.canvas,
+    borderWidth: 1,
+    borderColor: COLORS.ink,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+    borderRadius: BORDER_RADIUS.full,
+  },
+  newBadgeText: {
+    fontSize: TYPOGRAPHY.uppercaseTag.fontSize,
+    fontWeight: TYPOGRAPHY.uppercaseTag.fontWeight,
+    color: COLORS.ink,
+  },
+  accountButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: BORDER_RADIUS.full,
+    borderWidth: 1,
+    borderColor: COLORS.hairline,
+    backgroundColor: COLORS.canvas,
+    ...SHADOWS.pill,
+  },
+  accountButtonText: {
+    fontSize: TYPOGRAPHY.captionSm.fontSize,
+    fontWeight: '600',
+    color: COLORS.ink,
+    maxWidth: 70,
   },
   searchSection: {
-    marginBottom: SPACING.lg,
-    gap: SPACING.md,
+    marginVertical: SPACING.sm,
   },
-  searchButton: {
-    width: '100%',
+  sectionHeader: {
+    marginTop: SPACING.xs,
+    marginBottom: SPACING.md,
+  },
+  headline: {
+    fontSize: TYPOGRAPHY.displayLg.fontSize,
+    fontWeight: TYPOGRAPHY.displayLg.fontWeight,
+    color: COLORS.ink,
+    letterSpacing: -0.4,
+  },
+  subheadline: {
+    fontSize: TYPOGRAPHY.bodySm.fontSize,
+    color: COLORS.muted,
+    marginTop: 2,
   },
   listContent: {
-    paddingBottom: SPACING.xl,
+    paddingBottom: SPACING.xxl,
   },
   emptyState: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    gap: SPACING.md,
+    gap: SPACING.xs,
+    paddingVertical: SPACING.xxl,
   },
-  emptyStateText: {
-    fontSize: TYPOGRAPHY.body.medium.size,
-    color: COLORS.text.secondary,
+  emptyStateTitle: {
+    fontSize: TYPOGRAPHY.titleMd.fontSize,
+    fontWeight: TYPOGRAPHY.titleMd.fontWeight,
+    color: COLORS.ink,
+    marginTop: SPACING.sm,
+  },
+  emptyStateSub: {
+    fontSize: TYPOGRAPHY.bodySm.fontSize,
+    color: COLORS.muted,
   },
 });
 

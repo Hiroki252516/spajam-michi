@@ -1,229 +1,341 @@
 import { ViewStyle } from 'react-native';
 
 /**
- * デザインシステム定数
- * test_modelのFigmaデザインを忠実に再現するための色、Typography、spacing定義
+ * SPAJAM 2026 - Warm Marketplace Design Tokens
+ * DESIGN.md に厳密に則ったデザインシステム定数
  */
 
 // ==================== COLORS ====================
 
 export const COLORS = {
-  // プライマリグラデーション（紫）
+  // ブランドカラー（Warm Coral-Red）
+  primary: '#ff385c',
+  primaryActive: '#e00b41',
+  primaryDisabled: '#ffd1da',
+  primaryErrorText: '#c13515',
+
+  // グラデーション（メインCTA/ブランド用）
   gradient: {
-    start: '#4F46E5',    // インディゴ
-    end: '#7C3AED',      // パープル
+    start: '#ff385c',
+    end: '#e00b41',
   },
 
   // テキストカラー
+  ink: '#222222',         // メインテキスト（純黒ではない）
+  body: '#3f3f3f',        // 本文テキスト
+  muted: '#6a6a6a',       // 補助・サブテキスト
+  mutedSoft: '#929292',   // 薄い補助テキスト
+  onPrimary: '#ffffff',   // CTA用白テキスト
+  starRating: '#222222',  // 星評価用
+
   text: {
-    primary: '#1F2937',    // 濃い灰色（本文）
-    secondary: '#6B7280',  // 中灰色（補助テキスト）
-    tertiary: '#9CA3AF',   // 薄灰色（サブラベル）
-    white: '#FFFFFF',
-    light: '#F3F4F6',      // 薄灰色背景用
+    primary: '#222222',
+    secondary: '#6a6a6a',
+    tertiary: '#929292',
+    white: '#ffffff',
+    light: '#f7f7f7',
   },
 
   // 背景色
+  canvas: '#ffffff',      // メインキャンバス
+  surfaceSoft: '#f7f7f7',  // 薄いサブ背景
+  surfaceCard: '#ffffff',  // カード背景
+  surfaceStrong: '#f2f2f2',// ボタン背景など
+
   background: {
-    primary: '#FFFFFF',
-    secondary: '#F9FAFB',  // 薄灰色背景
-    tertiary: '#F3F4F6',   // もっと薄い背景
+    primary: '#ffffff',
+    secondary: '#f7f7f7',
+    tertiary: '#f2f2f2',
   },
 
-  // カード・コンポーネント背景
+  // 枠線・区切り線
+  hairline: '#dddddd',
+  hairlineSoft: '#ebebeb',
+  borderStrong: '#c1c1c1',
+
   card: {
-    background: 'rgba(255, 255, 255, 0.95)',  // セミトランスペアレント白
-    border: '#E5E7EB',
+    background: '#ffffff',
+    border: '#ebebeb',
   },
 
-  // ステータス色
+  // ステータス
   status: {
-    success: '#10B981',   // 緑
-    error: '#EF4444',     // 赤
-    warning: '#F59E0B',   // 黄
-    info: '#3B82F6',      // 青
+    success: '#10b981',
+    error: '#c13515',
+    warning: '#f59e0b',
+    info: '#3b82f6',
   },
 
-  // 星評価色
+  // 星評価
   star: {
-    filled: '#FCD34D',    // 金色
-    empty: '#E5E7EB',     // グレー
+    filled: '#ff385c',
+    empty: '#dddddd',
   },
 };
 
 // ==================== TYPOGRAPHY ====================
 
 export const TYPOGRAPHY = {
-  // 見出し
-  heading: {
+  displayXl: {
+    fontSize: 28,
     size: 28,
+    fontWeight: '700' as const,
     weight: '700' as const,
     lineHeight: 34,
   },
-
-  // サブ見出し
-  subheading: {
-    size: 24,
-    weight: '600' as const,
+  displayLg: {
+    fontSize: 22,
+    size: 22,
+    fontWeight: '500' as const,
+    weight: '500' as const,
+    lineHeight: 26,
+  },
+  displayMd: {
+    fontSize: 21,
+    size: 21,
+    fontWeight: '700' as const,
+    weight: '700' as const,
     lineHeight: 30,
   },
+  displaySm: {
+    fontSize: 20,
+    size: 20,
+    fontWeight: '600' as const,
+    weight: '600' as const,
+    lineHeight: 24,
+  },
+  titleMd: {
+    fontSize: 16,
+    size: 16,
+    fontWeight: '600' as const,
+    weight: '600' as const,
+    lineHeight: 20,
+  },
+  titleSm: {
+    fontSize: 16,
+    size: 16,
+    fontWeight: '500' as const,
+    weight: '500' as const,
+    lineHeight: 20,
+  },
+  ratingDisplay: {
+    fontSize: 64,
+    size: 64,
+    fontWeight: '700' as const,
+    weight: '700' as const,
+    lineHeight: 70,
+  },
+  bodyMd: {
+    fontSize: 16,
+    size: 16,
+    fontWeight: '400' as const,
+    weight: '400' as const,
+    lineHeight: 24,
+  },
+  bodySm: {
+    fontSize: 14,
+    size: 14,
+    fontWeight: '400' as const,
+    weight: '400' as const,
+    lineHeight: 20,
+  },
+  caption: {
+    fontSize: 14,
+    size: 14,
+    fontWeight: '500' as const,
+    weight: '500' as const,
+    lineHeight: 18,
+  },
+  captionSm: {
+    fontSize: 13,
+    size: 13,
+    fontWeight: '400' as const,
+    weight: '400' as const,
+    lineHeight: 16,
+  },
+  badge: {
+    fontSize: 11,
+    size: 11,
+    fontWeight: '600' as const,
+    weight: '600' as const,
+    lineHeight: 13,
+  },
+  microLabel: {
+    fontSize: 12,
+    size: 12,
+    fontWeight: '700' as const,
+    weight: '700' as const,
+    lineHeight: 16,
+  },
+  uppercaseTag: {
+    fontSize: 8,
+    size: 8,
+    fontWeight: '700' as const,
+    weight: '700' as const,
+    lineHeight: 10,
+    letterSpacing: 0.32,
+  },
+  buttonMd: {
+    fontSize: 16,
+    size: 16,
+    fontWeight: '500' as const,
+    weight: '500' as const,
+    lineHeight: 20,
+  },
+  buttonSm: {
+    fontSize: 14,
+    size: 14,
+    fontWeight: '500' as const,
+    weight: '500' as const,
+    lineHeight: 18,
+  },
+  navLink: {
+    fontSize: 16,
+    size: 16,
+    fontWeight: '600' as const,
+    weight: '600' as const,
+    lineHeight: 20,
+  },
 
-  // 本体テキスト（大）
+  // 互換性のための既存エイリアス
+  heading: {
+    size: 28,
+    fontSize: 28,
+    weight: '700' as const,
+    fontWeight: '700' as const,
+    lineHeight: 34,
+  },
+  subheading: {
+    size: 22,
+    fontSize: 22,
+    weight: '600' as const,
+    fontWeight: '600' as const,
+    lineHeight: 26,
+  },
   body: {
     large: {
       size: 18,
+      fontSize: 18,
       weight: '500' as const,
+      fontWeight: '500' as const,
       lineHeight: 24,
     },
-    // 本体テキスト（中）
     medium: {
       size: 16,
+      fontSize: 16,
       weight: '400' as const,
+      fontWeight: '400' as const,
       lineHeight: 22,
     },
-    // 本体テキスト（小）
     small: {
       size: 14,
+      fontSize: 14,
       weight: '400' as const,
+      fontWeight: '400' as const,
       lineHeight: 20,
     },
   },
-
-  // ラベル
   label: {
     size: 12,
+    fontSize: 12,
     weight: '600' as const,
+    fontWeight: '600' as const,
     lineHeight: 16,
   },
-
-  // キャプション
-  caption: {
-    size: 11,
-    weight: '400' as const,
-    lineHeight: 14,
-  },
-};
-
-// ==================== SPACING ====================
-
-export const SPACING = {
-  xs: 4,
-  sm: 8,
-  md: 16,
-  lg: 24,
-  xl: 32,
-  xxl: 48,
 };
 
 // ==================== BORDER RADIUS ====================
 
 export const BORDER_RADIUS = {
+  none: 0,
+  xs: 4,
+  sm: 8,
+  md: 14,   // DESIGN.md 規定: 14px
+  lg: 20,   // DESIGN.md 規定: 20px
+  xl: 32,   // DESIGN.md 規定: 32px
+  full: 9999,
+};
+
+// ==================== SPACING ====================
+
+export const SPACING = {
+  xxs: 2,
+  xs: 4,
   sm: 8,
   md: 12,
-  lg: 16,
-  xl: 24,
-  full: 9999,
+  base: 16,
+  lg: 24,
+  xl: 32,
+  xxl: 48,
+  section: 64,
 };
 
 // ==================== SHADOWS ====================
 
 /**
- * iOS/Android統一のドロップシャドウ定義
+ * DESIGN.md に定義された Elevation Tier (単一のシャドウ階層)
+ * box-shadow: rgba(0,0,0,0.02) 0 0 0 1px, rgba(0,0,0,0.04) 0 2px 6px, rgba(0,0,0,0.1) 0 4px 8px
  */
 export const SHADOWS = {
-  // 微小シャドウ（subtle）
   sm: {
     elevation: 2,
-    shadowColor: '#000',
+    shadowColor: '#000000',
     shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
+    shadowOpacity: 0.05,
+    shadowRadius: 3,
   } as ViewStyle,
 
-  // 通常シャドウ（medium）
   md: {
-    elevation: 4,
-    shadowColor: '#000',
+    elevation: 3,
+    shadowColor: '#000000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.12,
-    shadowRadius: 4,
+    shadowOpacity: 0.08,
+    shadowRadius: 6,
   } as ViewStyle,
 
-  // 大きいシャドウ（large）
   lg: {
-    elevation: 8,
-    shadowColor: '#000',
+    elevation: 6,
+    shadowColor: '#000000',
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 8,
+    shadowOpacity: 0.12,
+    shadowRadius: 10,
   } as ViewStyle,
 
-  // グラデーション用（テストモデルのカード用）
   card: {
     elevation: 3,
-    shadowColor: '#000',
+    shadowColor: '#000000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 3,
+    shadowOpacity: 0.08,
+    shadowRadius: 6,
+  } as ViewStyle,
+
+  pill: {
+    elevation: 2,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 4,
   } as ViewStyle,
 };
 
 // ==================== GRADIENTS ====================
 
 export const GRADIENTS = {
-  // プライマリ（検索・投稿ボタン等）
   primary: {
-    colors: [COLORS.gradient.start, COLORS.gradient.end],
+    colors: [COLORS.primary, COLORS.primaryActive],
     start: { x: 0, y: 0 },
     end: { x: 1, y: 0 },
   },
-
-  // 背景グラデーション（オプション）
   background: {
-    colors: ['#F9FAFB', '#FFFFFF'],
+    colors: ['#ffffff', '#f7f7f7'],
     start: { x: 0, y: 0 },
     end: { x: 0, y: 1 },
   },
 };
 
-// ==================== COMMON STYLES ====================
-
-export const COMMON_STYLES = {
-  // フレックスコンテナ（中央揃え）
-  flexCenter: {
-    display: 'flex',
-    justifyContent: 'center',
-    alignItems: 'center',
-  } as ViewStyle,
-
-  // フレックスコンテナ（スペースビトウィーン）
-  flexSpaceBetween: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  } as ViewStyle,
-
-  // フレックスコンテナ（スペースアラウンド）
-  flexSpaceAround: {
-    display: 'flex',
-    justifyContent: 'space-around',
-    alignItems: 'center',
-  } as ViewStyle,
-
-  // 絶対配置フル
-  absolute: {
-    position: 'absolute' as const,
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-  } as ViewStyle,
-};
-
 // ==================== SIZE CONSTANTS ====================
 
 export const SIZES = {
-  // アイコンサイズ
   icon: {
     xs: 16,
     sm: 20,
@@ -231,22 +343,16 @@ export const SIZES = {
     lg: 32,
     xl: 48,
   },
-
-  // ボタンサイズ
   button: {
     height: 48,
     minWidth: 100,
   },
-
-  // 入力フィールドサイズ
   input: {
-    height: 48,
-    borderRadius: BORDER_RADIUS.md,
+    height: 56,
+    borderRadius: BORDER_RADIUS.sm,
   },
-
-  // カードサイズ
   card: {
     minHeight: 120,
-    borderRadius: BORDER_RADIUS.lg,
+    borderRadius: BORDER_RADIUS.md,
   },
 };
