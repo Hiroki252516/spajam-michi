@@ -2,7 +2,6 @@
     "name": "LED",
     "version": "1.0.0",
     "private": true,
-    "description": "タスク・担当者・進捗は Jira で管理する。",
     "workspaces": [
         "backend",
         "frontend"
@@ -22,7 +21,7 @@
     },
     "repository": {
         "type": "git",
-        "url": "git+https://github.com/LED-quattro/dev.git"
+        "url": "git+https://github.com/spajam-jp/spajam2026-1-30.git"
     },
     "keywords": [],
     "author": "",
