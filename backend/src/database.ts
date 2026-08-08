@@ -1,11 +1,12 @@
 import { Pool } from "pg";
 
+import { fallbackSpotName } from "./event-display.js";
 import type { SearchDebugTimings } from "./search-timing.js";
 
 export type EventRow = {
   id: string;
   name: string;
-  spotName?: string;
+  spotName?: string | null;
   date: string;
   time: string;
   duration?: string;
@@ -53,7 +54,7 @@ export type AuthSessionRow = {
 
 export type VisitedEventRow = {
   id: string;
-  eventName: string;
+  spotName: string;
   visitedDate: string;
   rating: number;
 };
@@ -61,6 +62,7 @@ export type VisitedEventRow = {
 export type DiscoveredEventInput = {
   id: string;
   name: string;
+  spotName?: string | null;
   location: string;
   imageUri: string | null;
   description: string;
@@ -160,6 +162,7 @@ export interface EventStore {
     embedding: number[],
     model: string,
   ): Promise<void>;
+  updateEventSpotName?(eventId: string, spotName: string): Promise<void>;
   savePreferenceMemory(
     input: Omit<PreferenceMemoryRow, "similarity">,
   ): Promise<void>;
@@ -290,6 +293,7 @@ export class PostgresEventStore implements EventStore {
       CREATE INDEX IF NOT EXISTS events_location_index ON events(location);
 
       ALTER TABLE events ADD COLUMN IF NOT EXISTS source_provider text;
+      ALTER TABLE events ADD COLUMN IF NOT EXISTS spot_name text;
       ALTER TABLE events ADD COLUMN IF NOT EXISTS source_url text;
       ALTER TABLE events ADD COLUMN IF NOT EXISTS source_fingerprint text;
       ALTER TABLE events ADD COLUMN IF NOT EXISTS starts_at timestamptz;
@@ -553,7 +557,7 @@ export class PostgresEventStore implements EventStore {
 
   async listVisitedEvents(userId: string) {
     const result = await this.pool.query<VisitedEventDatabaseRow>(
-      `SELECT reviews.id, events.name AS event_name,
+      `SELECT reviews.id, events.spot_name, events.location,
           events.date AS visited_date, reviews.rating
        FROM reviews
        INNER JOIN events ON events.id = reviews.event_id
@@ -563,7 +567,7 @@ export class PostgresEventStore implements EventStore {
     );
     return result.rows.map((row) => ({
       id: row.id,
-      eventName: row.event_name,
+      spotName: row.spot_name ?? fallbackSpotName(row.location),
       visitedDate: formatVisitedDate(row.visited_date),
       rating: row.rating,
     }));
@@ -585,10 +589,10 @@ export class PostgresEventStore implements EventStore {
             detailed_description, latitude, longitude, organizer_name,
             organizer_contact_email, source_provider, source_url,
             source_fingerprint, starts_at, ends_at, content_text, embedding,
-            embedding_model, fetched_at
+            embedding_model, spot_name, fetched_at
           ) VALUES (
             $1, $2, $3, $4, $5, '距離計算中', $6, $7, $8, $9, $10, $11,
-            $12, $13, $14, $15, $16, $17, $18, $19::vector, $20, now()
+            $12, $13, $14, $15, $16, $17, $18, $19::vector, $20, $21, now()
           )
           ON CONFLICT (source_fingerprint)
             WHERE source_fingerprint IS NOT NULL DO UPDATE SET
@@ -608,6 +612,7 @@ export class PostgresEventStore implements EventStore {
             starts_at = EXCLUDED.starts_at,
             ends_at = EXCLUDED.ends_at,
             content_text = EXCLUDED.content_text,
+            spot_name = COALESCE(EXCLUDED.spot_name, events.spot_name),
             embedding = COALESCE(EXCLUDED.embedding, events.embedding),
             embedding_model = COALESCE(EXCLUDED.embedding_model, events.embedding_model),
             fetched_at = now(),
@@ -634,6 +639,7 @@ export class PostgresEventStore implements EventStore {
             event.contentText,
             embedding,
             event.embeddingModel,
+            event.spotName,
           ],
         );
         const id = result.rows[0]?.id;
@@ -704,6 +710,14 @@ export class PostgresEventStore implements EventStore {
       `UPDATE events SET embedding = $2::vector, embedding_model = $3,
         updated_at = now() WHERE id = $1`,
       [eventId, serializeVector(embedding), model],
+    );
+  }
+
+  async updateEventSpotName(eventId: string, spotName: string) {
+    await this.pool.query(
+      `UPDATE events SET spot_name = $2, updated_at = now()
+       WHERE id = $1 AND spot_name IS DISTINCT FROM $2`,
+      [eventId, spotName],
     );
   }
 
@@ -1004,6 +1018,7 @@ export async function openDatabase(databaseUrl: string, seed = false) {
 type EventDatabaseRow = {
   id: string;
   name: string;
+  spot_name: string | null;
   date: string;
   time: string;
   location: string;
@@ -1049,7 +1064,8 @@ type AuthSessionDatabaseRow = {
 
 type VisitedEventDatabaseRow = {
   id: string;
-  event_name: string;
+  spot_name: string | null;
+  location: string;
   visited_date: string;
   rating: number;
 };
@@ -1096,6 +1112,7 @@ function mapEvent(row: EventDatabaseRow): EventRow {
   return {
     id: row.id,
     name: row.name,
+    spotName: row.spot_name,
     date: row.date,
     time: row.time,
     location: row.location,
@@ -1212,6 +1229,7 @@ function deserializeDiscoveredEvent(
 ): DiscoveredEventInput {
   return {
     ...value,
+    spotName: value.spotName ?? null,
     startsAt: new Date(value.startsAt),
     endsAt: new Date(value.endsAt),
   };

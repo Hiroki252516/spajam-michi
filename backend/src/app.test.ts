@@ -20,6 +20,7 @@ const events: EventRow[] = [
   {
     id: "1",
     name: "SPAJAM 2026 オープニングセレモニー",
+    spotName: "渋谷駅周辺",
     date: "2026/08/08",
     time: "09:00-09:30",
     location: "東京都渋谷区",
@@ -40,6 +41,7 @@ const events: EventRow[] = [
   {
     id: "2",
     name: "React Native ワークショップ",
+    spotName: "表参道駅周辺",
     date: "2026/08/08",
     time: "10:00-11:30",
     location: "東京都渋谷区（ワークショップ会場A）",
@@ -208,6 +210,9 @@ describe("frontend API", () => {
         return {
           events: matches.slice(offset, offset + limit).map((event) => ({
             ...event,
+            spotName: event.spotName ?? "周辺エリア情報なし",
+            duration: "約25分",
+            cost: "0円",
             travelMode: "WALK" as const,
             travelDurationMinutes: 25,
             recommendationReason: "徒歩圏内で関心に近いイベントです。",
@@ -263,7 +268,7 @@ describe("frontend API", () => {
       status: string;
       data: {
         status: string;
-        events: { id: string; name: string }[];
+        events: { id: string; spotName: string }[];
         total: number;
         meta: Record<string, unknown>;
       };
@@ -274,7 +279,7 @@ describe("frontend API", () => {
     assert.equal("debugTimings" in body.data.meta, false);
     assert.deepEqual(body.data.events[0], {
       id: "2",
-      name: "React Native ワークショップ",
+      spotName: "表参道駅周辺",
       date: "2026/08/08",
       time: "10:00-11:30",
       location: "東京都渋谷区（ワークショップ会場A）",
@@ -284,6 +289,8 @@ describe("frontend API", () => {
       description: "React Nativeを使ったモバイル開発の基礎を学べます。",
       coordinates: { latitude: 35.6612, longitude: 139.7017 },
       sourceUrl: "https://example.com/events/2",
+      duration: "約25分",
+      cost: "0円",
       travelMode: "WALK",
       travelDurationMinutes: 25,
       recommendationReason: "徒歩圏内で関心に近いイベントです。",
@@ -467,9 +474,17 @@ describe("frontend API", () => {
     const response = await app.request("/api/events/1");
     assert.equal(response.status, 200);
     const body = (await response.json()) as {
-      data: { id: string; reviewCount: number; tags: string[] };
+      data: {
+        id: string;
+        spotName: string;
+        reviewCount: number;
+        tags: string[];
+        name?: string;
+      };
     };
     assert.equal(body.data.id, "1");
+    assert.equal(body.data.spotName, "渋谷駅周辺");
+    assert.equal("name" in body.data, false);
     assert.equal(body.data.reviewCount, 0);
     assert.deepEqual(body.data.tags, ["ハッカソン", "全参加者向け", "開幕"]);
   });
@@ -541,6 +556,30 @@ describe("frontend API", () => {
     assert.ok(body.data.token.split(".").length === 3);
     assert.equal(body.data.user.name, "山田 太郎");
     assert.deepEqual(body.data.user.visitedEvents, []);
+  });
+
+  it("exposes only spot names in visited-event history", async () => {
+    store.listVisitedEvents = async () => [
+      {
+        id: "review-1",
+        spotName: "渋谷駅周辺",
+        visitedDate: "2026年8月8日",
+        rating: 5,
+      },
+    ];
+    const response = await registerUser();
+    const body = (await response.json()) as {
+      data: {
+        user: {
+          visitedEvents: Array<{
+            spotName: string;
+            eventName?: string;
+          }>;
+        };
+      };
+    };
+    assert.equal(body.data.user.visitedEvents[0]?.spotName, "渋谷駅周辺");
+    assert.equal("eventName" in body.data.user.visitedEvents[0]!, false);
   });
 
   it("rejects a duplicate email address", async () => {

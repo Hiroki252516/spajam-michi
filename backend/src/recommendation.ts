@@ -19,6 +19,7 @@ import {
   extractEventsFromHtml,
   type ExtractedEvent,
 } from "./event-extractor.js";
+import { areaNameFromAddress } from "./event-display.js";
 import {
   DuckDuckGoCoordinateResolver,
   GsiGeocoder,
@@ -39,6 +40,9 @@ import {
 } from "./transit.js";
 
 export type RecommendedEvent = EventRow & {
+  spotName: string;
+  duration: string;
+  cost: string;
   sourceUrl: string | null;
   travelMode: TravelMode;
   travelDurationMinutes: number;
@@ -118,6 +122,11 @@ export interface RouteProvider {
     signal?: AbortSignal,
     timings?: SearchTimingCollector,
   ): Promise<(TransitRoute | null)[]>;
+  resolveNearbyAreas?(
+    destinations: Coordinates[],
+    signal?: AbortSignal,
+    timings?: SearchTimingCollector,
+  ): Promise<(string | null)[]>;
 }
 
 const preferenceTagsSchema = z.object({
@@ -295,9 +304,15 @@ export class LocalLlmRecommendationService implements EventRecommendationService
       }
       throw error;
     }
+    const enrichedCandidates = await this.attachSpotNames(
+      candidates,
+      signal,
+      input.timings,
+      degradedReasons,
+    );
     input.timings?.logStages(["transitRouting"]);
 
-    const routable = candidates.flatMap((event, index) => {
+    const routable = enrichedCandidates.flatMap((event, index) => {
       const route = routes[index];
       return route && route.durationSeconds <= 3_600 ? [{ event, route }] : [];
     });
@@ -335,6 +350,9 @@ export class LocalLlmRecommendationService implements EventRecommendationService
     const allEvents = ranked.map((candidate) => ({
       ...candidate.event,
       distance: formatDistance(candidate.route.distanceMeters),
+      spotName: candidate.event.spotName ?? "周辺エリア情報なし",
+      duration: formatTravelDuration(candidate.route.durationSeconds),
+      cost: formatTravelCost(candidate.route),
       sourceUrl: candidate.event.sourceUrl,
       travelMode: candidate.route.travelMode,
       travelDurationMinutes: Math.ceil(candidate.route.durationSeconds / 60),
@@ -434,6 +452,59 @@ export class LocalLlmRecommendationService implements EventRecommendationService
         embeddingStatus: "pending",
       });
     }
+  }
+
+  private async attachSpotNames(
+    events: EventRow[],
+    signal: AbortSignal,
+    timings: SearchTimingCollector | undefined,
+    degradedReasons: string[],
+  ) {
+    const unresolved = events
+      .map((event, index) => ({ event, index }))
+      .filter(({ event }) => !event.spotName?.trim());
+    const resolved = new Map<number, string>();
+    if (unresolved.length > 0 && this.routes.resolveNearbyAreas) {
+      try {
+        const names = await this.routes.resolveNearbyAreas(
+          unresolved.map(({ event }) => ({
+            latitude: event.latitude,
+            longitude: event.longitude,
+          })),
+          signal,
+          timings,
+        );
+        unresolved.forEach(({ index }, resultIndex) => {
+          const name = names[resultIndex]?.trim();
+          if (name) resolved.set(index, name.slice(0, 120));
+        });
+      } catch (error) {
+        degradedReasons.push("nearby_area_resolution_unavailable");
+        console.warn("Nearby station resolution unavailable", error);
+      }
+    }
+    return Promise.all(
+      events.map(async (event, index) => {
+        const spotName =
+          event.spotName?.trim() ||
+          resolved.get(index) ||
+          areaNameFromAddress(event.location) ||
+          "周辺エリア情報なし";
+        if (
+          !event.spotName &&
+          spotName !== "周辺エリア情報なし" &&
+          this.store.updateEventSpotName
+        ) {
+          try {
+            await this.store.updateEventSpotName(event.id, spotName);
+          } catch (error) {
+            degradedReasons.push("spot_name_persistence_unavailable");
+            console.warn("Spot name persistence failed", error);
+          }
+        }
+        return { ...event, spotName };
+      }),
+    );
   }
 
   private async discover(input: {
@@ -722,7 +793,6 @@ export class LocalLlmRecommendationService implements EventRecommendationService
             preferenceKeywords,
             events: candidates.map((candidate) => ({
               eventId: candidate.event.id,
-              name: candidate.event.name,
               description: candidate.event.description,
               travelMinutes: Math.ceil(candidate.route.durationSeconds / 60),
               travelMode: candidate.route.travelMode,
@@ -776,7 +846,8 @@ function toDiscoveredEvent(
   return {
     id: `evt_${sourceFingerprint.slice(0, 24)}`,
     name: event.name,
-    location: event.location,
+    spotName: null,
+    location: event.address,
     imageUri: event.imageUri,
     description: event.description || event.name,
     detailedDescription: event.contentText.slice(0, 5_000) || event.description,
@@ -905,6 +976,25 @@ function formatDistance(meters: number) {
   return meters < 1_000
     ? `${Math.round(meters)} m`
     : `${(meters / 1_000).toFixed(1)} km`;
+}
+
+export function formatTravelDuration(durationSeconds: number) {
+  return `約${Math.ceil(durationSeconds / 60)}分`;
+}
+
+export function formatTravelCost(route: TransitRoute) {
+  if (route.travelMode === "WALK") return "0円";
+  if (!route.fare) return "料金情報なし";
+  const usesIc = route.fare.ic !== null;
+  const amount = usesIc ? route.fare.ic! : route.fare.ticket;
+  const formatted = Number.isInteger(amount)
+    ? amount.toLocaleString("ja-JP")
+    : amount.toLocaleString("ja-JP", { maximumFractionDigits: 2 });
+  const price =
+    route.fare.currency.toUpperCase() === "JPY"
+      ? `${formatted}円`
+      : `${formatted} ${route.fare.currency.toUpperCase()}`;
+  return `${price}（${usesIc ? "IC" : "きっぷ"}）`;
 }
 
 function fallbackReason(candidate: RankedCandidate) {

@@ -13,8 +13,16 @@ describe("Transit API client", () => {
       requestedUrl = String(input);
       return Response.json({
         journeys: [
-          { durationSecs: 2_000, legs: [{ kind: "transit" }] },
-          { durationSecs: 1_200, legs: [{ kind: "transit" }] },
+          {
+            durationSecs: 2_000,
+            legs: [{ kind: "transit" }],
+            fare: { currency: "JPY", ticket: 500, ic: 490 },
+          },
+          {
+            durationSecs: 1_200,
+            legs: [{ kind: "transit" }],
+            fare: { currency: "JPY", ticket: 180, ic: 178 },
+          },
         ],
       });
     }) as typeof fetch);
@@ -28,11 +36,65 @@ describe("Transit API client", () => {
     );
     assert.equal(routes[0]?.durationSeconds, 1_200);
     assert.equal(routes[0]?.travelMode, "TRANSIT");
+    assert.deepEqual(routes[0]?.fare, {
+      currency: "JPY",
+      ticket: 180,
+      ic: 178,
+    });
     const url = new URL(requestedUrl);
     assert.equal(url.pathname, "/api/v1/plan");
     assert.equal(url.searchParams.get("from"), "geo:35.681236,139.767125");
     assert.equal(url.searchParams.get("to"), "geo:35.658034,139.701636");
     assert.equal(timings.snapshot().stages.transitRouting.operations, 1);
+  });
+
+  it("resolves a station before a closer stop and records the timing breakdown", async () => {
+    let requestedUrl = "";
+    const client = new TransitApiClient("https://api.transit.ls8h.com", (async (
+      input: URL | RequestInfo,
+    ) => {
+      requestedUrl = String(input);
+      return Response.json({
+        places: [
+          { name: "神宮前六丁目", kind: "stop", distanceMeters: 30 },
+          { name: "渋谷", kind: "station", distanceMeters: 450 },
+        ],
+      });
+    }) as typeof fetch);
+    const timings = new SearchTimingCollector("job-area", undefined, () => {});
+    const areas = await client.resolveNearbyAreas(
+      [{ latitude: 35.6595, longitude: 139.7004 }],
+      undefined,
+      timings,
+    );
+    assert.deepEqual(areas, ["渋谷駅周辺"]);
+    const url = new URL(requestedUrl);
+    assert.equal(url.pathname, "/api/v1/places/reverse");
+    assert.equal(url.searchParams.get("radiusMeters"), "500");
+    assert.equal(
+      timings.snapshot().stages.transitRouting.breakdown.nearbyStationLookup
+        ?.operations,
+      1,
+    );
+  });
+
+  it("falls back to a nearby stop when no station is returned", async () => {
+    const client = new TransitApiClient(
+      "https://api.transit.ls8h.com",
+      (async () =>
+        Response.json({
+          places: [
+            { name: "神宮前六丁目", kind: "stop", distanceMeters: 30 },
+            { name: "商業施設", kind: "place", distanceMeters: 10 },
+          ],
+        })) as typeof fetch,
+    );
+    assert.deepEqual(
+      await client.resolveNearbyAreas([
+        { latitude: 35.6595, longitude: 139.7004 },
+      ]),
+      ["神宮前六丁目周辺"],
+    );
   });
 
   it("fails when every Transit API request fails", async () => {

@@ -52,12 +52,30 @@ Authorization: Bearer <token>
 
 状態は`queued`、`running`、`succeeded`、`failed`のいずれかです。`succeeded`では`events`、`total`、`meta`を返します。`failed`では`error.code`と`error.message`を返します。ジョブは30分で失効し、他ユーザーのジョブは取得できません。
 
+検索結果ではイベント名を公開せず、最寄り駅などの周辺エリアと移動条件を返します。
+
+```json
+{
+  "id": "evt_xxx",
+  "spotName": "渋谷駅周辺",
+  "duration": "約24分",
+  "cost": "178円（IC）",
+  "location": "東京都渋谷区",
+  "distance": "2.1 km",
+  "travelMode": "TRANSIT",
+  "travelDurationMinutes": 24
+}
+```
+
 - `q`は省略可能で、既定値は`イベント`です。
 - 当日開催中または当日これから開始するイベントだけが対象です。
 - 現在地の緯度・経度をDuckDuckGoで検索し、検索結果に明記された地域名だけを採用します。
 - 出典ページに開始・終了日時と日本国内の会場住所が明記されていないイベントは除外します。
 - 会場住所を国土地理院の住所検索で緯度・経度へ変換します。LLMによる座標推測は行いません。
 - Transit APIの最短旅程が60分以内のイベントだけを返します。
+- 同じ最短旅程から移動所要時間と交通費を取得します。IC運賃を優先し、徒歩のみは`0円`、公共交通の運賃が不明な場合は`料金情報なし`とします。
+- イベント座標の500m以内にある駅を優先して`渋谷駅周辺`形式の`spotName`を生成します。駅がなければ停留所、市区町村、`周辺エリア情報なし`の順にフォールバックします。
+- イベント名はDBとRAG内部では保持しますが、検索、詳細、参加履歴のAPIレスポンスには含めません。
 - 評価履歴があればpgvectorで関連する嗜好メモを取得して順位へ反映します。履歴がなければ移動時間・検索語・開始時刻を使います。
 
 未認証は`401 AUTHENTICATION_REQUIRED`、座標不正は`400 LOCATION_REQUIRED`です。非同期処理中に地域名を確認できない場合はDB内の当日イベントへフォールバックします。Transit APIで全候補の所要時間を判定できない場合は`ROUTING_UNAVAILABLE`としてジョブが`failed`になります。
@@ -94,7 +112,7 @@ Authorization: Bearer <token>
 }
 ```
 
-対象工程は`duckDuckGoSearch`、`eventPageFetch`、`gemmaAnalysis`、`gsiGeocoding`、`transitRouting`、`ragRecommendation`の6種類です。`wallMs`は並列呼出しを含む実際の待ち時間、`cumulativeMs`は個々の呼出し時間の合計なので、並列処理では後者が大きくなる場合があります。キャッシュヒットや候補なしで未実行の工程は`skipped`と`skipReason`を返します。
+対象工程は`duckDuckGoSearch`、`eventPageFetch`、`gemmaAnalysis`、`gsiGeocoding`、`transitRouting`、`ragRecommendation`の6種類です。`transitRouting.breakdown`では経路取得を`routePlan`、周辺駅・停留所取得を`nearbyStationLookup`として確認できます。`wallMs`は並列呼出しを含む実際の待ち時間、`cumulativeMs`は個々の呼出し時間の合計なので、並列処理では後者が大きくなる場合があります。キャッシュヒットや候補なしで未実行の工程は`skipped`と`skipReason`を返します。
 
 デバッグ有効時は同じ集計を`event_search_stage_timing`と`event_search_timing_summary`のJSONログにも出力します。ログとAPIには正確な現在地、イベントURL、検索語、レビュー原文を含めません。計測値は検索ジョブと同じ30分で削除され、推薦ログには保存されません。
 
@@ -127,7 +145,7 @@ RUN_LOCAL_LLM_TESTS=1 npm test -w backend
 ## 外部サービスとデータ
 
 - DuckDuckGoへは、現在地の地域名を調べる最初の検索に限り正確な緯度・経度を送ります。その後のイベント検索では地域名、日付、検索語、一般化した嗜好タグを送ります。
-- Transit APIへは現在地と候補会場の緯度・経度を送ります。
+- Transit APIへは経路検索のため現在地と候補地点の緯度・経度を送り、周辺エリア名の取得には候補地点の緯度・経度を送ります。
 - 国土地理院の住所検索へは、公開されたイベント出典ページに記載された会場住所だけを送ります。利用時は国土地理院コンテンツ利用規約と出典表示要件に従ってください。
 - ユーザー名、メールアドレス、電話番号、レビュー原文はDuckDuckGo、国土地理院、Transit APIへ送信しません。
 - 正確な現在地は検索処理中のメモリだけで扱い、検索ジョブ、検索キャッシュ、推薦ログ、イベント履歴には保存しません。

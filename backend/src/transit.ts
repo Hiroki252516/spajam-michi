@@ -6,11 +6,18 @@ import {
 
 export type TravelMode = "TRANSIT" | "WALK";
 
+export type TransitFare = {
+  currency: string;
+  ticket: number;
+  ic: number | null;
+};
+
 export type TransitRoute = {
   destinationIndex: number;
   travelMode: TravelMode;
   durationSeconds: number;
   distanceMeters: number;
+  fare?: TransitFare | null;
 };
 
 export class TransitApiError extends Error {}
@@ -75,6 +82,23 @@ export class TransitApiClient {
     return routes;
   }
 
+  async resolveNearbyAreas(
+    destinations: Coordinates[],
+    signal?: AbortSignal,
+    timings?: SearchTimingCollector,
+  ) {
+    return Promise.all(
+      destinations.map((destination) =>
+        measureSearchTiming(
+          timings,
+          "transitRouting",
+          "nearbyStationLookup",
+          () => this.resolveNearbyArea(destination, signal),
+        ).catch(() => null),
+      ),
+    );
+  }
+
   private async planOne(
     origin: Coordinates,
     destination: Coordinates,
@@ -118,7 +142,54 @@ export class TransitApiClient {
         : ("WALK" as const),
       durationSeconds: fastest.durationSecs,
       distanceMeters: haversineMeters(origin, destination),
+      fare: normalizeFare(fastest.fare),
     };
+  }
+
+  private async resolveNearbyArea(
+    destination: Coordinates,
+    signal?: AbortSignal,
+  ) {
+    const url = new URL(
+      "/api/v1/places/reverse",
+      withTrailingSlash(this.baseUrl),
+    );
+    url.searchParams.set("lat", String(destination.latitude));
+    url.searchParams.set("lon", String(destination.longitude));
+    url.searchParams.set("limit", "10");
+    url.searchParams.set("radiusMeters", "500");
+    const response = await this.fetchImplementation(url, {
+      signal,
+      headers: { Accept: "application/json" },
+    });
+    if (!response.ok) {
+      throw new TransitApiError(`Transit API returned HTTP ${response.status}`);
+    }
+    const body = (await response.json()) as TransitPlacesResponse;
+    if (!Array.isArray(body.places)) {
+      throw new TransitApiError("Transit API returned invalid place JSON");
+    }
+    const ordered = body.places
+      .filter(
+        (place) =>
+          (place.kind === "station" || place.kind === "stop") &&
+          typeof place.name === "string" &&
+          place.name.trim().length > 0,
+      )
+      .sort((left, right) =>
+        left.kind !== right.kind
+          ? left.kind === "station"
+            ? -1
+            : 1
+          : (left.distanceMeters ?? Number.POSITIVE_INFINITY) -
+            (right.distanceMeters ?? Number.POSITIVE_INFINITY),
+      );
+    const nearest = ordered[0];
+    if (!nearest) return null;
+    const name = nearest.name.trim().slice(0, 100);
+    return nearest.kind === "station"
+      ? `${name.endsWith("駅") ? name : `${name}駅`}周辺`
+      : `${name}周辺`;
   }
 }
 
@@ -126,8 +197,40 @@ type TransitPlanResponse = {
   journeys?: {
     durationSecs: number;
     legs: { kind: string }[];
+    fare?: {
+      currency?: unknown;
+      ticket?: unknown;
+      ic?: unknown;
+    };
   }[];
 };
+
+type TransitPlacesResponse = {
+  places?: {
+    name: string;
+    kind: string;
+    distanceMeters?: number;
+  }[];
+};
+
+function normalizeFare(
+  fare: NonNullable<TransitPlanResponse["journeys"]>[number]["fare"],
+): TransitFare | null {
+  if (
+    !fare ||
+    typeof fare.currency !== "string" ||
+    typeof fare.ticket !== "number" ||
+    !Number.isFinite(fare.ticket) ||
+    fare.ticket < 0
+  ) {
+    return null;
+  }
+  const ic =
+    typeof fare.ic === "number" && Number.isFinite(fare.ic) && fare.ic >= 0
+      ? fare.ic
+      : null;
+  return { currency: fare.currency, ticket: fare.ticket, ic };
+}
 
 function formatTokyoDate(date: Date) {
   return dateParts(date).replaceAll("-", "");

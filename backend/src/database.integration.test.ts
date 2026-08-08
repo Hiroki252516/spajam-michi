@@ -19,6 +19,7 @@ it(
         DiscoveredEventInput,
         "id" | "name" | "sourceFingerprint"
       > = {
+        spotName: null,
         location: "東京都渋谷区",
         imageUri: null,
         description: "統合テストイベント",
@@ -51,6 +52,9 @@ it(
         },
       ]);
       assert.equal(events.length, 2, "one source page may contain two events");
+      await store.updateEventSpotName(events[0]!.id, "渋谷駅周辺");
+      const eventWithSpotName = await store.findEvent(events[0]!.id);
+      assert.equal(eventWithSpotName?.spotName, "渋谷駅周辺");
       await store.createUser({
         id: "user-integration",
         name: "統合テスト",

@@ -8,14 +8,55 @@ import type {
   PreferenceMemoryRow,
 } from "./database.js";
 import type { WebSearchProvider } from "./duckduckgo.js";
+import { areaNameFromAddress } from "./event-display.js";
 import { OllamaClient } from "./ollama.js";
 import {
+  formatTravelCost,
+  formatTravelDuration,
   LocalLlmRecommendationService,
   type RouteProvider,
 } from "./recommendation.js";
 import { SearchTimingCollector } from "./search-timing.js";
 
 describe("local LLM recommendation service", () => {
+  it("formats route duration and fares without guessing unknown transit fares", () => {
+    const baseRoute = {
+      destinationIndex: 0,
+      travelMode: "TRANSIT" as const,
+      distanceMeters: 1_000,
+      durationSeconds: 1_401,
+    };
+    assert.equal(formatTravelDuration(baseRoute.durationSeconds), "約24分");
+    assert.equal(
+      formatTravelCost({
+        ...baseRoute,
+        fare: { currency: "JPY", ticket: 180, ic: 178 },
+      }),
+      "178円（IC）",
+    );
+    assert.equal(
+      formatTravelCost({
+        ...baseRoute,
+        fare: { currency: "JPY", ticket: 180, ic: null },
+      }),
+      "180円（きっぷ）",
+    );
+    assert.equal(
+      formatTravelCost({ ...baseRoute, fare: null }),
+      "料金情報なし",
+    );
+    assert.equal(
+      formatTravelCost({ ...baseRoute, travelMode: "WALK", fare: null }),
+      "0円",
+    );
+  });
+
+  it("uses a municipality as a non-identifying area fallback", () => {
+    assert.equal(areaNameFromAddress("東京都渋谷区神宮前1-2-3"), "渋谷区周辺");
+    assert.equal(areaNameFromAddress("大阪府大阪市北区梅田"), "大阪市周辺");
+    assert.equal(areaNameFromAddress("会場名のみ"), null);
+  });
+
   it("uses cached discovery and promotes highly rated similar events", async () => {
     const now = new Date();
     const discovered = [
@@ -25,6 +66,7 @@ describe("local LLM recommendation service", () => {
     const positive = preferenceMemory("review-a", "evt-old-a", 5, vector(1, 0));
     const negative = preferenceMemory("review-b", "evt-old-b", 1, vector(0, 1));
     let loggedPersonalized = false;
+    const persistedSpotNames = new Map<string, string>();
     const store = {
       listPreferenceMemories: async () => [positive, negative],
       getDiscoveryCache: async () => ({
@@ -35,6 +77,9 @@ describe("local LLM recommendation service", () => {
         events.map(toEventRow),
       listActiveEvents: async () => [],
       setEventEmbedding: async () => undefined,
+      updateEventSpotName: async (eventId: string, spotName: string) => {
+        persistedSpotNames.set(eventId, spotName);
+      },
       findSimilarPreferenceMemories: async (
         _userId: string,
         embedding: number[],
@@ -63,7 +108,11 @@ describe("local LLM recommendation service", () => {
       },
       {
         locationResolver: { resolve: async () => "東京都 渋谷区" },
-        routes: routeProvider(),
+        routes: {
+          ...routeProvider(),
+          resolveNearbyAreas: async (destinations) =>
+            destinations.map(() => "渋谷駅周辺"),
+        },
         ollama,
         webSearch: noWebSearch,
       },
@@ -81,6 +130,10 @@ describe("local LLM recommendation service", () => {
     assert.equal(result.meta.source, "cache");
     assert.equal(result.meta.personalized, true);
     assert.equal(result.events[0]?.id, "evt-a");
+    assert.equal(result.events[0]?.spotName, "渋谷駅周辺");
+    assert.equal(persistedSpotNames.get("evt-a"), "渋谷駅周辺");
+    assert.equal(result.events[0]?.duration, "約30分");
+    assert.equal(result.events[0]?.cost, "料金情報なし");
     assert.equal(loggedPersonalized, true);
     const timingResult = timings.snapshot();
     assert.equal(
@@ -289,6 +342,7 @@ function toEventRow(event: DiscoveredEventInput): EventRow {
   return {
     id: event.id,
     name: event.name,
+    spotName: event.spotName ?? null,
     date: "2026/08/08",
     time: "10:00-12:00",
     location: event.location,
@@ -346,6 +400,7 @@ function routeProvider(
         travelMode: "TRANSIT" as const,
         distanceMeters: 2_000,
         durationSeconds,
+        fare: null,
       }));
     },
   };

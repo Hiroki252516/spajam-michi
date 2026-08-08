@@ -165,7 +165,7 @@ operations   = 3
 | `eventPageFetch`    | 検索結果上位ページのHTML取得                                 | `publicPageFetch`                                                                                               |
 | `gemmaAnalysis`     | 現在地名抽出、検索tool calling、イベントの構造化抽出         | `currentLocationExtraction`、`searchToolPlanning`、`eventStructuredExtraction`                                  |
 | `gsiGeocoding`      | 公開イベントページの会場住所を国土地理院APIで座標化          | `venueAddressGeocoding`                                                                                         |
-| `transitRouting`    | 現在地から各候補会場までのTransit API旅程取得                | `routePlan`                                                                                                     |
+| `transitRouting`    | 現在地から各候補地点までのTransit API旅程と周辺エリア取得     | `routePlan`、`nearbyStationLookup`                                                                               |
 | `ragRecommendation` | 嗜好メモ、EmbeddingGemma、pgvector検索、ランキング、推薦理由 | `preferenceMemoryLoadAndBackfill`、`candidateEmbeddingVectorSearchAndRanking`、`recommendationReasonGeneration` |
 
 `breakdown`にはイベントURL、現在地、検索語などは表示されません。同じ固定処理名の呼び出しがまとめて集計されます。
@@ -215,7 +215,7 @@ Ollamaの起動状態、モデルのロード時間、Macのメモリ・CPU・GP
 
 ### Transit APIが遅い
 
-`transitRouting.operations`は経路判定した候補数です。`cumulativeMs`が大きくても`wallMs`が比較的小さければ、並列処理が有効に働いています。`wallMs`と`maxMs`が両方大きい場合はTransit APIの応答がボトルネックです。
+`transitRouting.breakdown.routePlan`は経路判定、`nearbyStationLookup`は`渋谷駅周辺`のような表示用エリア取得です。`transitRouting.operations`は両方の呼出回数を合算します。`cumulativeMs`が大きくても`wallMs`が比較的小さければ、並列処理が有効に働いています。`wallMs`と`maxMs`が両方大きい場合はTransit APIの応答がボトルネックです。
 
 ### RAG推薦が遅い
 

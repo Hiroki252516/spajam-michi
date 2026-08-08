@@ -5,6 +5,7 @@ import { Hono } from "hono";
 import { AuthService } from "./auth.js";
 import type { EventRow, EventStore } from "./database.js";
 import { ApiError } from "./errors.js";
+import { fallbackSpotName } from "./event-display.js";
 import { LocationResolutionError } from "./geocoding.js";
 import {
   RoutingUnavailableError,
@@ -185,7 +186,7 @@ export function createApp(
       status: "success",
       data: {
         id: event.id,
-        name: event.name,
+        spotName: event.spotName ?? fallbackSpotName(event.location),
         date: event.date,
         time: event.time,
         location: event.location,
@@ -392,7 +393,7 @@ function parseSearchTimingDebug(value: string | undefined, enabled: boolean) {
 function toEventSummary(event: EventRow) {
   return {
     id: event.id,
-    name: event.name,
+    spotName: event.spotName ?? "周辺エリア情報なし",
     date: event.date,
     time: event.time,
     location: event.location,
@@ -407,6 +408,8 @@ function toEventSummary(event: EventRow) {
     ...(isRecommendedEvent(event)
       ? {
           sourceUrl: event.sourceUrl,
+          duration: event.duration,
+          cost: event.cost,
           travelMode: event.travelMode,
           travelDurationMinutes: event.travelDurationMinutes,
           recommendationReason: event.recommendationReason,
@@ -416,6 +419,9 @@ function toEventSummary(event: EventRow) {
 }
 
 function isRecommendedEvent(event: EventRow): event is EventRow & {
+  spotName: string;
+  duration: string;
+  cost: string;
   travelMode: "TRANSIT" | "WALK";
   travelDurationMinutes: number;
   recommendationReason: string;
