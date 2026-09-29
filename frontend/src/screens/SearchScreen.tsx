@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   FlatList,
   ScrollView,
@@ -11,18 +11,27 @@ import {
   RefreshControl,
 } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import * as Location from 'expo-location';
 import ScreenContainer from '../components/ScreenContainer';
-import EventCard, { EventCardData } from '../components/EventCard';
+import EventCard, { type EventCardData } from '../components/EventCard';
 import CardComponent from '../components/CardComponent';
 import { COLORS, TYPOGRAPHY, SPACING, BORDER_RADIUS, SHADOWS } from '../constants/design';
-import { DUMMY_EVENTS } from '../constants/dummyData';
-import { fetchEvents } from '../services/api';
+import { searchEvents } from '../services/api';
+import type { EventData, EventSearchResponse } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 
 interface SearchScreenProps {
-  onEventSelect: (eventId: string, eventName: string) => void;
+  onEventSelect: (event: EventData) => void;
   onOpenLogin: () => void;
   onOpenMyPage: () => void;
+}
+
+function emptySearchMessage(result: EventSearchResponse) {
+  if (result.events.length > 0) return null;
+  if (result.meta.degradedReasons.includes('current_location_resolution_unavailable')) {
+    return '現在地の地域名を特定できず、近くのイベントを検索できませんでした。時間をおいて再検索してください。';
+  }
+  return null;
 }
 
 /**
@@ -33,13 +42,14 @@ const SearchScreen: React.FC<SearchScreenProps> = ({
   onOpenLogin,
   onOpenMyPage,
 }) => {
-  const { isLoggedIn, user, completeTutorial } = useAuth();
+  const { isLoggedIn, user, token, completeTutorial } = useAuth();
   const [activeTab, setActiveTab] = useState<'events' | 'guide'>(
     user?.isFirstLogin ? 'guide' : 'events'
   );
-  const [events, setEvents] = useState<EventCardData[]>(DUMMY_EVENTS);
+  const [events, setEvents] = useState<EventCardData[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
     if (user?.isFirstLogin) {
@@ -52,41 +62,74 @@ const SearchScreen: React.FC<SearchScreenProps> = ({
     setActiveTab('events');
   };
 
-  const loadEvents = async () => {
-    try {
-      const data = await fetchEvents();
-      if (data && data.length > 0) {
-        setEvents(data as EventCardData[]);
-      }
-    } catch (error) {
-      console.warn('Failed to load events from backend:', error);
+  const fetchCurrentEvents = useCallback(async () => {
+    if (!token) throw new Error('ログインしてからイベントを検索してください。');
+
+    let permission = await Location.getForegroundPermissionsAsync();
+    if (!permission.granted) {
+      permission = await Location.requestForegroundPermissionsAsync();
     }
-  };
+    if (!permission.granted) {
+      throw new Error('イベント検索には位置情報の許可が必要です。iPhoneの設定からExpo Goの位置情報を許可してください。');
+    }
+    if (!(await Location.hasServicesEnabledAsync())) {
+      throw new Error('iPhoneの位置情報サービスを有効にしてください。');
+    }
+
+    const position = await Location.getCurrentPositionAsync({
+      accuracy: Location.Accuracy.Balanced,
+    });
+    return searchEvents({
+      token,
+      latitude: position.coords.latitude,
+      longitude: position.coords.longitude,
+    });
+  }, [token]);
 
   useEffect(() => {
     let isMounted = true;
     const initialLoad = async () => {
       setIsLoading(true);
-      await loadEvents();
-      if (isMounted) {
-        setIsLoading(false);
+      setLoadError(null);
+      try {
+        const result = await fetchCurrentEvents();
+        if (isMounted) {
+          setEvents(result.events);
+          setLoadError(emptySearchMessage(result));
+        }
+      } catch (error) {
+        if (isMounted) {
+          setEvents([]);
+          setLoadError(error instanceof Error ? error.message : 'イベントを検索できませんでした。');
+        }
+      } finally {
+        if (isMounted) setIsLoading(false);
       }
     };
 
-    initialLoad();
+    void initialLoad();
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [fetchCurrentEvents]);
 
   const handleRefresh = async () => {
     setIsRefreshing(true);
-    await loadEvents();
-    setIsRefreshing(false);
+    setLoadError(null);
+    try {
+      const result = await fetchCurrentEvents();
+      setEvents(result.events);
+      setLoadError(emptySearchMessage(result));
+    } catch (error) {
+      setEvents([]);
+      setLoadError(error instanceof Error ? error.message : 'イベントを検索できませんでした。');
+    } finally {
+      setIsRefreshing(false);
+    }
   };
 
-  const handleEventPress = (eventId: string, eventName: string) => {
-    onEventSelect(eventId, eventName);
+  const handleEventPress = (event: EventData) => {
+    onEventSelect(event);
   };
 
   return (
@@ -172,7 +215,7 @@ const SearchScreen: React.FC<SearchScreenProps> = ({
                 renderItem={({ item }) => (
                   <EventCard
                     event={item}
-                    onPress={() => handleEventPress(item.id, item.name)}
+                    onPress={() => handleEventPress(item)}
                   />
                 )}
                 keyExtractor={(item) => item.id}
@@ -195,7 +238,13 @@ const SearchScreen: React.FC<SearchScreenProps> = ({
                   size={48}
                   color={COLORS.mutedSoft}
                 />
-                <Text style={styles.emptyStateTitle}>イベントが見つかりませんでした</Text>
+                <Text style={styles.emptyStateTitle}>
+                  {loadError ? 'イベントを検索できませんでした' : '現在地周辺でイベントが見つかりませんでした'}
+                </Text>
+                {loadError && <Text style={styles.subheadline}>{loadError}</Text>}
+                <Pressable onPress={handleRefresh} style={styles.retryButton}>
+                  <Text style={styles.retryButtonText}>現在地から再検索</Text>
+                </Pressable>
               </View>
             )}
           </>
@@ -397,6 +446,17 @@ const styles = StyleSheet.create({
     fontWeight: TYPOGRAPHY.titleMd.fontWeight,
     color: COLORS.ink,
     marginTop: SPACING.sm,
+  },
+  retryButton: {
+    marginTop: SPACING.md,
+    paddingHorizontal: SPACING.lg,
+    paddingVertical: SPACING.sm,
+    borderRadius: BORDER_RADIUS.full,
+    backgroundColor: COLORS.primary,
+  },
+  retryButtonText: {
+    color: COLORS.onPrimary,
+    fontWeight: '700',
   },
   /* チュートリアルガイド表示用スタイル */
   guideContainer: {

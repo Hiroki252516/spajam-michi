@@ -46,7 +46,7 @@ const TextInputField: React.FC<TextInputFieldProps> = ({
           placeholderTextColor={COLORS.text.tertiary}
           style={[
             styles.input,
-            icon && styles.inputWithIcon,
+            icon ? styles.inputWithIcon : undefined,
             inputStyle,
           ]}
           {...props}

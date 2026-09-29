@@ -85,6 +85,7 @@ export type RecommendationConfig = {
   ollamaBaseUrl: string;
   ollamaChatModel: string;
   ollamaEmbeddingModel: string;
+  ollamaRequestTimeoutMs?: number;
   transitApiBaseUrl?: string;
   searchTimeoutMs?: number;
   pageTimeoutMs?: number;
@@ -192,6 +193,8 @@ export class LocalLlmRecommendationService implements EventRecommendationService
         config.ollamaBaseUrl,
         config.ollamaChatModel,
         config.ollamaEmbeddingModel,
+        fetch,
+        config.ollamaRequestTimeoutMs,
       );
     this.webSearch =
       dependencies.webSearch ?? new DuckDuckGoHtmlSearchProvider();

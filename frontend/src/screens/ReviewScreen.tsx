@@ -11,12 +11,12 @@ import ScreenContainer from '../components/ScreenContainer';
 import StarRating from '../components/StarRating';
 import GradientButton from '../components/GradientButton';
 import { COLORS, TYPOGRAPHY, SPACING, BORDER_RADIUS } from '../constants/design';
-import { getEventById } from '../constants/dummyData';
+import { submitReview } from '../services/api';
+import type { EventData } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 
 interface ReviewScreenProps {
-  eventId: string;
-  eventName: string;
+  event: EventData & { name: string };
   onReviewSubmitted: () => void;
   onGoBack: () => void;
 }
@@ -34,12 +34,11 @@ const SATISFACTION_LABELS: Record<number, string> = {
  * 到着後に参加したイベントの満足度を記録する
  */
 const ReviewScreen: React.FC<ReviewScreenProps> = ({
-  eventId,
+  event,
   onReviewSubmitted,
   onGoBack,
 }) => {
-  const event = getEventById(eventId);
-  const { addVisitedEvent } = useAuth();
+  const { addVisitedEvent, token, user } = useAuth();
   const [rating, setRating] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -52,11 +51,9 @@ const ReviewScreen: React.FC<ReviewScreenProps> = ({
     setIsSubmitting(true);
 
     try {
-      // 満足度を記録（ユーザープロフィールの参加履歴に保存）
-      addVisitedEvent(event?.name || '体験イベント', rating);
-
-      // ダミー遅延
-      await new Promise<void>((resolve) => setTimeout(resolve, 600));
+      if (!token || !user) throw new Error('ログイン状態を確認できません。もう一度ログインしてください。');
+      await submitReview(event.id, rating, user.id, token);
+      addVisitedEvent(event.name, rating);
 
       Alert.alert('記録完了', 'イベントへの参加と満足度を記録しました！', [
         {
@@ -72,14 +69,6 @@ const ReviewScreen: React.FC<ReviewScreenProps> = ({
       setIsSubmitting(false);
     }
   };
-
-  if (!event) {
-    return (
-      <ScreenContainer>
-        <Text style={styles.errorText}>イベント情報が見つかりません</Text>
-      </ScreenContainer>
-    );
-  }
 
   return (
     <>
@@ -106,7 +95,7 @@ const ReviewScreen: React.FC<ReviewScreenProps> = ({
               <Text style={styles.arrivedTagText}>参加完了</Text>
             </View>
             <Text style={styles.eventName} numberOfLines={2}>
-              {event.name}
+            {event.name}
             </Text>
             <Text style={styles.eventDate}>
               📍 {event.location} ({event.time})

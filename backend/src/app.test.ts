@@ -489,6 +489,44 @@ describe("frontend API", () => {
     assert.deepEqual(body.data.tags, ["ハッカソン", "全参加者向け", "開幕"]);
   });
 
+  it("reveals the event name only after an authenticated location reaches the destination", async () => {
+    const token = await registerAndGetToken();
+    const headers = {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    };
+    const tooFar = await app.request("/api/events/1/reveal", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ latitude: 35.661, longitude: 139.7004 }),
+    });
+    assert.equal(tooFar.status, 403);
+    assert.equal(
+      ((await tooFar.json()) as { error: { code: string } }).error.code,
+      "ARRIVAL_NOT_CONFIRMED",
+    );
+
+    const unauthenticated = await app.request("/api/events/1/reveal", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ latitude: 35.6595, longitude: 139.7004 }),
+    });
+    assert.equal(unauthenticated.status, 401);
+
+    const arrived = await app.request("/api/events/1/reveal", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ latitude: 35.6595, longitude: 139.7004 }),
+    });
+    assert.equal(arrived.status, 200);
+    const body = (await arrived.json()) as {
+      data: { id: string; name: string; description: string };
+    };
+    assert.equal(body.data.id, "1");
+    assert.equal(body.data.name, events[0].name);
+    assert.equal(body.data.description, events[0].description);
+  });
+
   it("creates a review and rejects a duplicate", async () => {
     const request = {
       method: "POST",

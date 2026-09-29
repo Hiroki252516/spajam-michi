@@ -8,7 +8,7 @@ import { COLORS, TYPOGRAPHY, SPACING, BORDER_RADIUS, SHADOWS } from '../constant
 
 export interface EventCardData {
   id: string;
-  name: string;
+  name?: string;
   spotName?: string;
   date: string;
   time: string;
@@ -16,7 +16,7 @@ export interface EventCardData {
   cost?: string;
   location: string;
   distance?: string;
-  imageUri?: string;
+  imageUri?: string | null;
   coordinates?: {
     latitude: number;
     longitude: number;
@@ -35,10 +35,6 @@ interface EventCardProps {
  */
 const EventCard: React.FC<EventCardProps> = ({ event, onPress, style }) => {
   const displayTitle = event.spotName || `目的地 (${event.location})`;
-  const coordinates = event.coordinates || {
-    latitude: 35.6595,
-    longitude: 139.7004,
-  };
 
   return (
     <Pressable
@@ -53,29 +49,32 @@ const EventCard: React.FC<EventCardProps> = ({ event, onPress, style }) => {
         <View style={styles.cardContent}>
           {/* 開催場所周辺の地図表示エリア */}
           <View style={styles.mapWrapper} pointerEvents="none">
-            <MapView
-              style={styles.map}
-              initialRegion={{
-                latitude: coordinates.latitude,
-                longitude: coordinates.longitude,
-                latitudeDelta: 0.008,
-                longitudeDelta: 0.008,
-              }}
-              scrollEnabled={false}
-              zoomEnabled={false}
-              rotateEnabled={false}
-              pitchEnabled={false}
-            >
-              <Marker
-                coordinate={{
-                  latitude: coordinates.latitude,
-                  longitude: coordinates.longitude,
+            {event.coordinates ? (
+              <MapView
+                style={styles.map}
+                initialRegion={{
+                  latitude: event.coordinates.latitude,
+                  longitude: event.coordinates.longitude,
+                  latitudeDelta: 0.008,
+                  longitudeDelta: 0.008,
                 }}
-                title={displayTitle}
+                scrollEnabled={false}
+                zoomEnabled={false}
+                rotateEnabled={false}
+                pitchEnabled={false}
               >
-                <LocationMarker isArrived={false} size="sm" />
-              </Marker>
-            </MapView>
+                <Marker
+                  coordinate={event.coordinates}
+                  title={displayTitle}
+                >
+                  <LocationMarker isArrived={false} size="sm" />
+                </Marker>
+              </MapView>
+            ) : (
+              <View style={styles.mapFallback}>
+                <Text style={styles.mapFallbackText}>地図の座標を取得できませんでした</Text>
+              </View>
+            )}
             <View style={styles.mapBadge}>
               <MaterialCommunityIcons name="map-marker" size={14} color={COLORS.primary} />
               <Text style={styles.mapBadgeText}>開催場所周辺マップ</Text>
@@ -168,6 +167,15 @@ const styles = StyleSheet.create({
   map: {
     width: '100%',
     height: '100%',
+  },
+  mapFallback: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  mapFallbackText: {
+    fontSize: TYPOGRAPHY.captionSm.fontSize,
+    color: COLORS.muted,
   },
   mapBadge: {
     position: 'absolute',

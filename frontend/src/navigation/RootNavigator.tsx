@@ -10,11 +10,12 @@ import MyPageScreen from '../screens/MyPageScreen';
 import RegisterScreen from '../screens/RegisterScreen';
 import { COLORS } from '../constants/design';
 import { useAuth } from '../context/AuthContext';
+import type { EventData, RevealedEvent } from '../services/api';
 
 export type RootStackParamList = {
   Search: undefined;
-  Guide: { eventId: string; eventName: string };
-  Review: { eventId: string; eventName: string };
+  Guide: { event: EventData };
+  Review: { event: EventData & RevealedEvent };
   Login: undefined;
   Register: undefined;
   MyPage: undefined;
@@ -93,8 +94,8 @@ const SearchScreenContainer: React.FC<StackScreenProps<RootStackParamList, 'Sear
 }) => {
   return (
     <SearchScreen
-      onEventSelect={(eventId, eventName) => {
-        navigation.push('Guide', { eventId, eventName });
+      onEventSelect={(event) => {
+        navigation.push('Guide', { event });
       }}
       onOpenLogin={() => {
         navigation.push('Login');
@@ -170,14 +171,15 @@ const GuideScreenContainer: React.FC<StackScreenProps<RootStackParamList, 'Guide
   navigation,
   route,
 }) => {
-  const { eventId, eventName } = route.params;
+  const { event } = route.params;
+  const { token } = useAuth();
 
   return (
     <GuideScreen
-      eventId={eventId}
-      eventName={eventName}
-      onArrived={() => {
-        navigation.replace('Review', { eventId, eventName });
+      event={event}
+      token={token ?? ''}
+      onArrived={(revealedEvent) => {
+        navigation.replace('Review', { event: { ...event, ...revealedEvent } });
       }}
       onGoBack={() => {
         navigation.goBack();
@@ -193,12 +195,11 @@ const ReviewScreenContainer: React.FC<StackScreenProps<RootStackParamList, 'Revi
   navigation,
   route,
 }) => {
-  const { eventId, eventName } = route.params;
+  const { event } = route.params;
 
   return (
     <ReviewScreen
-      eventId={eventId}
-      eventName={eventName}
+      event={event}
       onReviewSubmitted={() => {
         navigation.popToTop();
       }}
