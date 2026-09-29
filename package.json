@@ -28,6 +28,6 @@
     "license": "ISC",
     "type": "commonjs",
     "overrides": {
-        "react-native-screens": "4.16.0"
+        "react-native-screens": "4.26.0"
     }
 }
