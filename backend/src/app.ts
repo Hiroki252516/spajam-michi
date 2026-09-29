@@ -14,6 +14,8 @@ import {
 } from "./recommendation.js";
 import { SearchTimingCollector } from "./search-timing.js";
 
+const ARRIVAL_VERIFICATION_DISTANCE_METERS = 100;
+
 export function createApp(
   database: EventStore,
   options: {
@@ -170,6 +172,49 @@ export function createApp(
     return context.json({
       status: "success",
       data: { jobId: job.id, status: job.status },
+    });
+  });
+
+  app.post("/api/events/:eventId/reveal", async (context) => {
+    try {
+      await authService.authenticate(context.req.header("Authorization"));
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        throw new ApiError(
+          401,
+          "AUTHENTICATION_REQUIRED",
+          "イベントの詳細を表示するにはログインが必要です。",
+        );
+      }
+      throw error;
+    }
+
+    const location = await readArrivalLocation(context.req.raw);
+    const event = await database.findEvent(context.req.param("eventId"));
+    if (!event) {
+      throw new ApiError(404, "EVENT_NOT_FOUND", "指定されたイベントが見つかりません。");
+    }
+    if (
+      distanceInMeters(location, {
+        latitude: event.latitude,
+        longitude: event.longitude,
+      }) > ARRIVAL_VERIFICATION_DISTANCE_METERS
+    ) {
+      throw new ApiError(
+        403,
+        "ARRIVAL_NOT_CONFIRMED",
+        "目的地から100m以内に近づくとイベントを確認できます。",
+      );
+    }
+
+    return context.json({
+      status: "success",
+      data: {
+        id: event.id,
+        name: event.name,
+        description: event.description,
+        detailedDescription: event.detailedDescription,
+      },
     });
   });
 
@@ -433,7 +478,16 @@ function parseCoordinate(
   value: string | undefined,
   type: "latitude" | "longitude",
 ) {
-  const parsed = value === undefined ? Number.NaN : Number(value);
+  return parseCoordinateValue(value, type);
+}
+
+function parseCoordinateValue(value: unknown, type: "latitude" | "longitude") {
+  const parsed =
+    typeof value === "number"
+      ? value
+      : typeof value === "string"
+        ? Number(value)
+        : Number.NaN;
   const minimum = type === "latitude" ? -90 : -180;
   const maximum = type === "latitude" ? 90 : 180;
   if (!Number.isFinite(parsed) || parsed < minimum || parsed > maximum) {
@@ -444,6 +498,29 @@ function parseCoordinate(
     );
   }
   return parsed;
+}
+
+async function readArrivalLocation(request: Request) {
+  const body = await readObjectBody(request);
+  return {
+    latitude: parseCoordinateValue(body.latitude, "latitude"),
+    longitude: parseCoordinateValue(body.longitude, "longitude"),
+  };
+}
+
+function distanceInMeters(
+  first: { latitude: number; longitude: number },
+  second: { latitude: number; longitude: number },
+) {
+  const earthRadiusMeters = 6_371_000;
+  const latitudeDelta = ((second.latitude - first.latitude) * Math.PI) / 180;
+  const longitudeDelta = ((second.longitude - first.longitude) * Math.PI) / 180;
+  const haversine =
+    Math.sin(latitudeDelta / 2) ** 2 +
+    Math.cos((first.latitude * Math.PI) / 180) *
+      Math.cos((second.latitude * Math.PI) / 180) *
+      Math.sin(longitudeDelta / 2) ** 2;
+  return 2 * earthRadiusMeters * Math.atan2(Math.sqrt(haversine), Math.sqrt(1 - haversine));
 }
 
 function parseInteger(

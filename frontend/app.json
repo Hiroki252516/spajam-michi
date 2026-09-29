@@ -9,7 +9,13 @@
       "bundler": "metro"
     },
     "plugins": [
-      "expo-font"
+      "expo-font",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "現在地周辺のイベント検索と目的地までの距離表示に使用します。"
+        }
+      ]
     ]
   }
 }

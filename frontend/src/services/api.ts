@@ -1,19 +1,8 @@
-import { DUMMY_EVENTS } from '../constants/dummyData';
-
-const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:8080';
-
-interface ApiResponse<T = unknown> {
-  status: 'success' | 'error';
-  data?: T;
-  error?: {
-    code: string;
-    message: string;
-  };
-}
+import { API_BASE_URL, apiRequest } from './apiClient';
 
 export interface EventData {
   id: string;
-  name: string;
+  name?: string;
   spotName?: string;
   date: string;
   time: string;
@@ -21,19 +10,49 @@ export interface EventData {
   cost?: string;
   location: string;
   distance?: string;
-  imageUri?: string;
+  imageUri?: string | null;
   description?: string;
+  detailedDescription?: string;
+  rating?: number;
   coordinates?: {
     latitude: number;
     longitude: number;
   };
+  sourceUrl?: string | null;
+  travelMode?: 'TRANSIT' | 'WALK';
+  travelDurationMinutes?: number;
+  recommendationReason?: string;
 }
 
-interface EventSearchResponse {
+export interface RevealedEvent {
+  id: string;
+  name: string;
+  description: string;
+  detailedDescription: string;
+}
+
+export interface EventSearchMetadata {
+  source: 'live' | 'cache' | 'database_fallback';
+  degradedReasons: string[];
+}
+
+export interface EventSearchResponse {
   events: EventData[];
-  total: number;
-  limit: number;
-  offset: number;
+  meta: EventSearchMetadata;
+}
+
+interface SearchAccepted {
+  jobId: string;
+  status: 'queued';
+  pollUrl: string;
+}
+
+interface SearchJob {
+  jobId: string;
+  status: 'queued' | 'running' | 'succeeded' | 'failed';
+  events?: EventData[];
+  meta?: EventSearchMetadata;
+  error?: { code?: string; message?: string };
 }
 
 interface ReviewResponse {
@@ -45,141 +64,102 @@ interface ReviewResponse {
   updatedAt?: string;
 }
 
+const SEARCH_POLL_INTERVAL_MS = 1_000;
+const SEARCH_TIMEOUT_MS = 135_000;
+
+function delay(milliseconds: number) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
 /**
- * イベント一覧取得（バックエンド接続時は実データ、未接続時はダミーデータにフォールバック）
+ * 現在地から実イベントを検索し、非同期検索ジョブの完了まで待つ。
  */
-export const fetchEvents = async (
-  limit: number = 20,
-  offset: number = 0
-): Promise<EventData[]> => {
-  try {
-    const params = new URLSearchParams({
-      limit: limit.toString(),
-      offset: offset.toString(),
+export async function searchEvents(input: {
+  token: string;
+  latitude: number;
+  longitude: number;
+  query?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<EventSearchResponse> {
+  const params = new URLSearchParams({
+    latitude: String(input.latitude),
+    longitude: String(input.longitude),
+    q: input.query?.trim() || 'イベント',
+    limit: String(input.limit ?? 20),
+    offset: String(input.offset ?? 0),
+  });
+  const accepted = await apiRequest<SearchAccepted>(
+    `/api/events/search?${params.toString()}`,
+    { headers: { Authorization: `Bearer ${input.token}` } },
+  );
+
+  const deadline = Date.now() + SEARCH_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    await delay(SEARCH_POLL_INTERVAL_MS);
+    const job = await apiRequest<SearchJob>(accepted.pollUrl, {
+      headers: { Authorization: `Bearer ${input.token}` },
     });
 
-    const response = await fetch(
-      `${API_BASE_URL}/api/events?${params.toString()}`
-    );
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    if (job.status === 'succeeded') {
+      return {
+        events: job.events ?? [],
+        meta: job.meta ?? { source: 'database_fallback', degradedReasons: [] },
+      };
     }
-
-    const data: ApiResponse<EventSearchResponse> = await response.json();
-
-    if (data.status === 'error') {
-      throw new Error(data.error?.message || 'Unknown error');
+    if (job.status === 'failed') {
+      throw new Error(job.error?.message ?? 'イベント検索に失敗しました。');
     }
-
-    return data.data?.events || [];
-  } catch (error) {
-    console.warn('Backend API fetch failed, falling back to dummy events:', error);
-    return DUMMY_EVENTS as EventData[];
   }
-};
+
+  throw new Error('イベント検索に時間がかかっています。少し待ってから再検索してください。');
+}
 
 /**
- * イベント検索（互換性保持用）
+ * 目的地まで100m以内に到着したことをサーバーで確認し、イベント名を取得する。
  */
-export const searchEvents = async (
-  limit: number = 20,
-  offset: number = 0
-): Promise<EventData[]> => {
-  return fetchEvents(limit, offset);
-};
-
-/**
- * イベント詳細取得
- */
-export const getEventDetail = async (eventId: string): Promise<EventData> => {
-  try {
-    const response = await fetch(`${API_BASE_URL}/api/events/${eventId}`);
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-
-    const data: ApiResponse<EventData> = await response.json();
-
-    if (data.status === 'error') {
-      throw new Error(data.error?.message || 'Unknown error');
-    }
-
-    return data.data || ({} as EventData);
-  } catch (error) {
-    console.error('Error fetching event detail:', error);
-    throw error;
-  }
-};
-
-/**
- * レビュー投稿
- */
-export const submitReview = async (
+export function revealEvent(
   eventId: string,
-  rating: number,
-  userId: string = 'anonymous'
-): Promise<ReviewResponse> => {
-  try {
-    const response = await fetch(`${API_BASE_URL}/api/reviews`, {
+  token: string,
+  coordinates: { latitude: number; longitude: number },
+): Promise<RevealedEvent> {
+  return apiRequest<RevealedEvent>(
+    `/api/events/${encodeURIComponent(eventId)}/reveal`,
+    {
       method: 'POST',
       headers: {
+        Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        eventId,
-        rating,
-        userId,
-      }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-
-    const data: ApiResponse<ReviewResponse> = await response.json();
-
-    if (data.status === 'error') {
-      throw new Error(data.error?.message || 'Unknown error');
-    }
-
-    return data.data || ({} as ReviewResponse);
-  } catch (error) {
-    console.error('Error submitting review:', error);
-    throw error;
-  }
-};
+      body: JSON.stringify(coordinates),
+    },
+  );
+}
 
 /**
- * ヘルスチェック
+ * 満足度をバックエンドに保存する。
  */
-export const checkHealth = async (): Promise<boolean> => {
-  try {
-    const response = await fetch(`${API_BASE_URL}/health`);
+export function submitReview(
+  eventId: string,
+  rating: number,
+  userId: string,
+  token: string,
+): Promise<ReviewResponse> {
+  return apiRequest<ReviewResponse>('/api/reviews', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ eventId, rating, userId }),
+  });
+}
 
+export async function checkHealth(): Promise<boolean> {
+  try {
+    const response = await fetch(new URL('/health', `${API_BASE_URL}/`).toString());
     return response.ok;
-  } catch (error) {
-    console.warn('Health check failed:', error);
+  } catch {
     return false;
   }
-};
-
-/**
- * デバッグ用: ダミーデータをリセット（開発環境のみ）
- */
-export const resetDummyData = async (): Promise<void> => {
-  try {
-    const response = await fetch(`${API_BASE_URL}/api/dev/reset`, {
-      method: 'POST',
-    });
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-
-    console.log('Dummy data reset successfully');
-  } catch (error) {
-    console.warn('Error resetting dummy data:', error);
-  }
-};
+}

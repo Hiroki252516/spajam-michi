@@ -19,6 +19,10 @@ async function main() {
     ollamaChatModel: process.env.OLLAMA_CHAT_MODEL ?? "gemma4:e2b",
     ollamaEmbeddingModel:
       process.env.OLLAMA_EMBEDDING_MODEL ?? "embeddinggemma:300m-qat-q4_0",
+    ollamaRequestTimeoutMs: readPositiveInteger(
+      process.env.OLLAMA_REQUEST_TIMEOUT_MS,
+      15_000,
+    ),
     transitApiBaseUrl:
       process.env.TRANSIT_API_BASE_URL ?? "https://api.transit.ls8h.com",
     searchTimeoutMs: readPositiveInteger(

@@ -28,6 +28,7 @@ export class OllamaClient {
     readonly chatModel: string,
     readonly embeddingModel: string,
     private readonly fetchImplementation: typeof fetch = fetch,
+    private readonly requestTimeoutMs = 15_000,
   ) {
     assertLocalOllamaUrl(baseUrl);
   }
@@ -197,13 +198,17 @@ export class OllamaClient {
   }
 
   private async request<T>(path: string, body: unknown, signal?: AbortSignal) {
+    const timeoutSignal = AbortSignal.timeout(this.requestTimeoutMs);
+    const requestSignal = signal
+      ? AbortSignal.any([signal, timeoutSignal])
+      : timeoutSignal;
     const response = await this.fetchImplementation(
       new URL(path, withTrailingSlash(this.baseUrl)),
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
-        signal,
+        signal: requestSignal,
       },
     );
     if (!response.ok) {

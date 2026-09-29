@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -8,19 +8,50 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import MapView, { Marker } from 'react-native-maps';
+import * as Location from 'expo-location';
+import MapView, { Marker, type Region } from 'react-native-maps';
 import ScreenContainer from '../components/ScreenContainer';
 import CardComponent from '../components/CardComponent';
 import LocationMarker from '../components/LocationMarker';
 import GradientButton from '../components/GradientButton';
 import { COLORS, TYPOGRAPHY, SPACING, BORDER_RADIUS, SHADOWS } from '../constants/design';
-import { getEventById } from '../constants/dummyData';
+import { revealEvent } from '../services/api';
+import type { EventData, RevealedEvent } from '../services/api';
 
 interface GuideScreenProps {
-  eventId: string;
-  eventName: string;
-  onArrived: () => void;
+  event: EventData;
+  token: string;
+  onArrived: (event: RevealedEvent) => void;
   onGoBack: () => void;
+}
+
+const ARRIVAL_THRESHOLD_METERS = 100;
+
+function distanceFromEvent(
+  first: { latitude: number; longitude: number },
+  second: { latitude: number; longitude: number },
+) {
+  const earthRadiusMeters = 6_371_000;
+  const latitudeDelta = ((second.latitude - first.latitude) * Math.PI) / 180;
+  const longitudeDelta = ((second.longitude - first.longitude) * Math.PI) / 180;
+  const haversine =
+    Math.sin(latitudeDelta / 2) ** 2 +
+    Math.cos((first.latitude * Math.PI) / 180) *
+      Math.cos((second.latitude * Math.PI) / 180) *
+      Math.sin(longitudeDelta / 2) ** 2;
+  return 2 * earthRadiusMeters * Math.atan2(Math.sqrt(haversine), Math.sqrt(1 - haversine));
+}
+
+function createRegion(
+  current: { latitude: number; longitude: number },
+  destination: { latitude: number; longitude: number },
+): Region {
+  return {
+    latitude: (current.latitude + destination.latitude) / 2,
+    longitude: (current.longitude + destination.longitude) / 2,
+    latitudeDelta: Math.max(Math.abs(current.latitude - destination.latitude) * 1.5, 0.01),
+    longitudeDelta: Math.max(Math.abs(current.longitude - destination.longitude) * 1.5, 0.01),
+  };
 }
 
 /**
@@ -28,73 +59,128 @@ interface GuideScreenProps {
  * 目的地に到着するとイベント詳細が開放され、参加と満足度の記録へ進む
  */
 const GuideScreen: React.FC<GuideScreenProps> = ({
-  eventId,
+  event,
+  token,
   onArrived,
   onGoBack,
 }) => {
-  const event = getEventById(eventId);
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const [userLocation, setUserLocation] = useState({
-    latitude: 35.6595, // デフォルト位置（東京渋谷）
-    longitude: 139.7004,
-    latitudeDelta: 0.01,
-    longitudeDelta: 0.01,
-  });
-
-  const [isArrived, setIsArrived] = useState(false);
+  const [userLocation, setUserLocation] = useState<Location.LocationObjectCoords | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [distance, setDistance] = useState<number | null>(null);
+  const [locationError, setLocationError] = useState<string | null>(null);
+  const [revealedEvent, setRevealedEvent] = useState<RevealedEvent | null>(null);
+  const [isRevealing, setIsRevealing] = useState(false);
+  const [revealError, setRevealError] = useState<string | null>(null);
+  const revealAttempted = useRef(false);
+  const mapRef = useRef<MapView | null>(null);
+  const [mapReady, setMapReady] = useState(false);
+  const hasFittedMap = useRef(false);
 
-  const ARRIVAL_THRESHOLD = 100; // メートル単位での到着判定距離
+  const requestReveal = useCallback(async (coordinates: Location.LocationObjectCoords) => {
+    if (!token || !event.coordinates || revealAttempted.current || distanceFromEvent(coordinates, event.coordinates) > ARRIVAL_THRESHOLD_METERS) {
+      return;
+    }
 
-  /**
-   * 2つの座標間の距離を計算（Haversine公式）
-   */
-  const calculateDistance = (
-    lat1: number,
-    lon1: number,
-    lat2: number,
-    lon2: number
-  ): number => {
-    const R = 6371000;
-    const dLat = ((lat2 - lat1) * Math.PI) / 180;
-    const dLon = ((lon2 - lon1) * Math.PI) / 180;
-    const a =
-      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-      Math.cos((lat1 * Math.PI) / 180) *
-        Math.cos((lat2 * Math.PI) / 180) *
-        Math.sin(dLon / 2) *
-        Math.sin(dLon / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c;
-  };
+    revealAttempted.current = true;
+    setIsRevealing(true);
+    setRevealError(null);
+    try {
+      const details = await revealEvent(event.id, token, {
+        latitude: coordinates.latitude,
+        longitude: coordinates.longitude,
+      });
+      setRevealedEvent(details);
+    } catch (error) {
+      setRevealError(error instanceof Error ? error.message : '到着を確認できませんでした。');
+    } finally {
+      setIsRevealing(false);
+    }
+  }, [event.coordinates, event.id, token]);
 
   useEffect(() => {
-    setIsLoading(false);
+    let isActive = true;
+    let subscription: Location.LocationSubscription | undefined;
 
-    const interval = setInterval(() => {
-      if (event) {
-        const dist = calculateDistance(
-          userLocation.latitude,
-          userLocation.longitude,
-          event.coordinates.latitude,
-          event.coordinates.longitude
-        );
-        setDistance(dist);
-
-        if (dist < ARRIVAL_THRESHOLD && !isArrived) {
-          setIsArrived(true);
-        }
+    const updateLocation = (coordinates: Location.LocationObjectCoords) => {
+      if (!isActive) return;
+      setUserLocation(coordinates);
+      if (event.coordinates) {
+        const currentDistance = distanceFromEvent(coordinates, event.coordinates);
+        setDistance(currentDistance);
+        if (currentDistance <= ARRIVAL_THRESHOLD_METERS) void requestReveal(coordinates);
       }
-    }, 2000);
+    };
 
-    return () => clearInterval(interval);
-  }, [event, userLocation, isArrived]);
+    const startLocationUpdates = async () => {
+      const permission = await Location.requestForegroundPermissionsAsync();
+      if (!permission.granted) {
+        throw new Error('ナビゲーションには位置情報の許可が必要です。');
+      }
+      if (!(await Location.hasServicesEnabledAsync())) {
+        throw new Error('iPhoneの位置情報サービスを有効にしてください。');
+      }
 
-  if (!event) {
+      const current = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.High,
+      });
+      updateLocation(current.coords);
+      setIsLoading(false);
+
+      subscription = await Location.watchPositionAsync(
+        {
+          accuracy: Location.Accuracy.High,
+          distanceInterval: 5,
+          timeInterval: 3_000,
+        },
+        (position) => updateLocation(position.coords),
+      );
+      if (!isActive) subscription.remove();
+    };
+
+    void startLocationUpdates().catch((error: unknown) => {
+      if (!isActive) return;
+      setLocationError(error instanceof Error ? error.message : '現在地を取得できませんでした。');
+      setIsLoading(false);
+    });
+
+    return () => {
+      isActive = false;
+      subscription?.remove();
+    };
+  }, [event.coordinates, requestReveal]);
+
+  useEffect(() => {
+    if (!mapReady || !userLocation || !event.coordinates || hasFittedMap.current) return;
+    hasFittedMap.current = true;
+    const timer = setTimeout(() => {
+      mapRef.current?.fitToCoordinates(
+        [
+          { latitude: userLocation.latitude, longitude: userLocation.longitude },
+          event.coordinates!,
+        ],
+        {
+          edgePadding: { top: 110, right: 36, bottom: 360, left: 36 },
+          animated: true,
+        },
+      );
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [event.coordinates, mapReady, userLocation]);
+
+  const retryArrivalCheck = () => {
+    if (!userLocation) return;
+    revealAttempted.current = false;
+    void requestReveal(userLocation);
+  };
+
+  const initialRegion: Region | undefined = userLocation && event.coordinates
+    ? createRegion(userLocation, event.coordinates)
+    : undefined;
+
+  if (!event.coordinates) {
     return (
       <ScreenContainer>
-        <Text style={styles.errorText}>目的地情報が見つかりません</Text>
+        <Text style={styles.errorText}>目的地の座標を取得できませんでした</Text>
       </ScreenContainer>
     );
   }
@@ -110,15 +196,28 @@ const GuideScreen: React.FC<GuideScreenProps> = ({
     );
   }
 
+  if (!userLocation) {
+    return (
+      <ScreenContainer>
+        <Text style={styles.errorText}>{locationError ?? '現在地を取得できませんでした。'}</Text>
+        <Pressable style={styles.retryButton} onPress={onGoBack}>
+          <Text style={styles.retryButtonText}>イベント一覧へ戻る</Text>
+        </Pressable>
+      </ScreenContainer>
+    );
+  }
+
   return (
     <>
       <StatusBar barStyle="dark-content" backgroundColor={COLORS.background.primary} />
       <View style={styles.container}>
         {/* 地図 */}
         <MapView
+          ref={mapRef}
           style={styles.map}
-          initialRegion={userLocation}
+          initialRegion={initialRegion}
           showsUserLocation={true}
+          onMapReady={() => setMapReady(true)}
         >
           {/* イベント位置マーカー */}
           <Marker
@@ -126,9 +225,9 @@ const GuideScreen: React.FC<GuideScreenProps> = ({
               latitude: event.coordinates.latitude,
               longitude: event.coordinates.longitude,
             }}
-            title={isArrived ? event.name : (event.spotName || '目的地スポット')}
+            title={revealedEvent?.name ?? event.spotName ?? '目的地スポット'}
           >
-            <LocationMarker isArrived={isArrived} size="md" />
+            <LocationMarker isArrived={Boolean(revealedEvent)} size="md" />
           </Marker>
         </MapView>
 
@@ -145,14 +244,16 @@ const GuideScreen: React.FC<GuideScreenProps> = ({
         <View style={styles.infoPanel}>
           <CardComponent blurred={true} padding={SPACING.md}>
             {/* 到着前後のタイトル */}
-            {isArrived ? (
+            {revealedEvent ? (
               <View style={styles.unlockedHeader}>
                 <View style={styles.unlockedBadge}>
                   <MaterialCommunityIcons name="party-popper" size={16} color={COLORS.onPrimary} />
                   <Text style={styles.unlockedBadgeText}>イベント解放！</Text>
                 </View>
-                <Text style={styles.revealedEventName}>{event.name}</Text>
-                <Text style={styles.eventDescription}>{event.description}</Text>
+                <Text style={styles.revealedEventName}>{revealedEvent.name}</Text>
+                <Text style={styles.eventDescription}>
+                  {revealedEvent.detailedDescription || revealedEvent.description}
+                </Text>
               </View>
             ) : (
               <View style={styles.mysteryHeader}>
@@ -181,7 +282,7 @@ const GuideScreen: React.FC<GuideScreenProps> = ({
             )}
 
             {/* 到着状態 */}
-            {isArrived ? (
+            {revealedEvent ? (
               <View style={styles.arrivedSection}>
                 <MaterialCommunityIcons
                   name="check-circle"
@@ -193,13 +294,16 @@ const GuideScreen: React.FC<GuideScreenProps> = ({
             ) : (
               <View style={styles.guidingRow}>
                 <ActivityIndicator size="small" color={COLORS.primary} />
-                <Text style={styles.guidingText}>目的地に向かっています...</Text>
-                <Pressable
-                  style={styles.simArrivalButton}
-                  onPress={() => setIsArrived(true)}
-                >
-                  <Text style={styles.simArrivalText}>[テスト:到着]</Text>
-                </Pressable>
+                <Text style={styles.guidingText}>
+                  {isRevealing
+                    ? '到着地点を確認しています...'
+                    : revealError ?? '目的地に向かっています...'}
+                </Text>
+                {revealError && (
+                  <Pressable onPress={retryArrivalCheck}>
+                    <Text style={styles.retryButtonText}>再確認</Text>
+                  </Pressable>
+                )}
               </View>
             )}
 
@@ -224,10 +328,10 @@ const GuideScreen: React.FC<GuideScreenProps> = ({
             </View>
 
             {/* 満足度記録へ進むボタン（到着後） */}
-            {isArrived && (
+            {revealedEvent && (
               <GradientButton
                 title="イベントに参加して満足度を記録する"
-                onPress={onArrived}
+                onPress={() => onArrived(revealedEvent)}
                 size="md"
                 style={styles.reviewButton}
               />
@@ -353,15 +457,17 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
     flex: 1,
   },
-  simArrivalButton: {
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    backgroundColor: COLORS.surfaceStrong,
-    borderRadius: BORDER_RADIUS.sm,
+  retryButton: {
+    alignSelf: 'center',
+    marginTop: SPACING.md,
+    paddingHorizontal: SPACING.lg,
+    paddingVertical: SPACING.sm,
+    borderRadius: BORDER_RADIUS.full,
+    backgroundColor: COLORS.primary,
   },
-  simArrivalText: {
-    fontSize: 11,
-    color: COLORS.muted,
+  retryButtonText: {
+    color: COLORS.onPrimary,
+    fontWeight: '700',
   },
   detailsGrid: {
     flexDirection: 'row',

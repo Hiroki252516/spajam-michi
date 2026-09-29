@@ -121,6 +121,7 @@ Authorization: Bearer <token>
 - `OLLAMA_BASE_URL`: OllamaのURL
 - `OLLAMA_CHAT_MODEL`: 検索計画・抽出・推薦理由用モデル
 - `OLLAMA_EMBEDDING_MODEL`: 768次元の埋め込みモデル
+- `OLLAMA_REQUEST_TIMEOUT_MS`: Ollamaへの1回の要求の上限。既定値15秒。超過時は検索全体を中断せず、各機能のフォールバックを使用します。
 - `TRANSIT_API_BASE_URL`: 既定値`https://api.transit.ls8h.com`
 - `EVENT_SEARCH_JOB_TIMEOUT_MS`: 非同期検索全体の上限。既定値120秒
 - `EVENT_PAGE_TIMEOUT_MS`: イベントページ1件の取得上限。既定値5秒

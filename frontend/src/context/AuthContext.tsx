@@ -1,8 +1,10 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { UserProfile, VisitedEventItem, loginApi, registerApi, logoutApi } from '../services/authApi';
+import { loginApi, registerApi, logoutApi } from '../services/authApi';
+import type { UserProfile, VisitedEventItem } from '../services/authApi';
 
 interface AuthContextType {
   user: UserProfile | null;
+  token: string | null;
   isLoggedIn: boolean;
   isLoading: boolean;
   login: (email: string, password: string) => Promise<void>;
@@ -20,6 +22,7 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
  */
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<UserProfile | null>(null);
+  const [token, setToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
   useEffect(() => {
@@ -38,6 +41,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       const res = await loginApi(email, password);
       setUser(res.user);
+      setToken(res.token);
     } finally {
       setIsLoading(false);
     }
@@ -48,6 +52,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       const res = await registerApi(name, email, password);
       setUser(res.user);
+      setToken(res.token);
     } finally {
       setIsLoading(false);
     }
@@ -56,9 +61,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const logout = async () => {
     setIsLoading(true);
     try {
-      await logoutApi();
-      setUser(null);
+      if (token) await logoutApi(token);
+    } catch {
+      // Clear the local session even if the backend is temporarily unavailable.
     } finally {
+      setUser(null);
+      setToken(null);
       setIsLoading(false);
     }
   };
@@ -106,6 +114,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     <AuthContext.Provider
       value={{
         user,
+        token,
         isLoggedIn: Boolean(user),
         isLoading,
         login,
