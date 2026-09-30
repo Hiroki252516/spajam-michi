@@ -109,7 +109,7 @@ describe("local LLM recommendation service", () => {
       {
         locationResolver: { resolve: async () => "東京都 渋谷区" },
         routes: {
-          ...routeProvider(),
+          ...routeProvider(1_800, undefined, 300, "渋谷駅周辺"),
           resolveNearbyAreas: async (destinations) =>
             destinations.map(() => "渋谷駅周辺"),
         },
@@ -132,7 +132,8 @@ describe("local LLM recommendation service", () => {
     assert.equal(result.events[0]?.id, "evt-a");
     assert.equal(result.events[0]?.spotName, "渋谷駅周辺");
     assert.equal(persistedSpotNames.get("evt-a"), "渋谷駅周辺");
-    assert.equal(result.events[0]?.duration, "約30分");
+    assert.equal(result.events[0]?.duration, "約35分（会場まで徒歩約5分含む）");
+    assert.equal(result.events[0]?.travelDurationMinutes, 35);
     assert.equal(result.events[0]?.cost, "料金情報なし");
     assert.equal(loggedPersonalized, true);
     const timingResult = timings.snapshot();
@@ -237,9 +238,13 @@ describe("local LLM recommendation service", () => {
       },
       {
         locationResolver: { resolve: async () => "東京都 渋谷区" },
-        routes: routeProvider(3_601, (count) => {
-          routedDestinations = count;
-        }),
+        routes: routeProvider(
+          3_500,
+          (count) => {
+            routedDestinations = count;
+          },
+          200,
+        ),
         ollama,
         webSearch: { search: async () => [] },
       },
@@ -391,6 +396,8 @@ function vector(first: number, second: number) {
 function routeProvider(
   durationSeconds = 1_800,
   onDestinations?: (count: number) => void,
+  destinationWalkSeconds = 0,
+  nearbyAreaName?: string,
 ): RouteProvider {
   return {
     computeRoutes: async (_origin, destinations) => {
@@ -399,7 +406,9 @@ function routeProvider(
         destinationIndex,
         travelMode: "TRANSIT" as const,
         distanceMeters: 2_000,
-        durationSeconds,
+        durationSeconds: durationSeconds + destinationWalkSeconds,
+        destinationWalkSeconds,
+        nearbyAreaName,
         fare: null,
       }));
     },

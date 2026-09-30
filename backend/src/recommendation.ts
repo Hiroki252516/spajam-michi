@@ -309,6 +309,7 @@ export class LocalLlmRecommendationService implements EventRecommendationService
     }
     const enrichedCandidates = await this.attachSpotNames(
       candidates,
+      routes,
       signal,
       input.timings,
       degradedReasons,
@@ -354,7 +355,7 @@ export class LocalLlmRecommendationService implements EventRecommendationService
       ...candidate.event,
       distance: formatDistance(candidate.route.distanceMeters),
       spotName: candidate.event.spotName ?? "周辺エリア情報なし",
-      duration: formatTravelDuration(candidate.route.durationSeconds),
+      duration: formatRouteDuration(candidate.route),
       cost: formatTravelCost(candidate.route),
       sourceUrl: candidate.event.sourceUrl,
       travelMode: candidate.route.travelMode,
@@ -396,7 +397,7 @@ export class LocalLlmRecommendationService implements EventRecommendationService
         currentLocationProvider: "duckduckgo" as const,
         degradedReasons: [...new Set(degradedReasons)],
         travelAdvisory:
-          "所要時間はTransit APIが返す公共交通・徒歩の旅程に基づき、運行状況や経路提供範囲により取得できない場合があります。",
+          "乗換所要時間はTransit APIの旅程を使用します。会場最寄り駅から会場までの徒歩は、直線距離に基づく概算を所要時間に加算します。",
       },
     };
   }
@@ -459,14 +460,24 @@ export class LocalLlmRecommendationService implements EventRecommendationService
 
   private async attachSpotNames(
     events: EventRow[],
+    routes: (TransitRoute | null)[],
     signal: AbortSignal,
     timings: SearchTimingCollector | undefined,
     degradedReasons: string[],
   ) {
+    const routeNames = new Map<number, string>();
+    events.forEach((event, index) => {
+      const name = routes[index]?.nearbyAreaName?.trim();
+      if (!event.spotName?.trim() && name) {
+        routeNames.set(index, name.slice(0, 120));
+      }
+    });
     const unresolved = events
       .map((event, index) => ({ event, index }))
-      .filter(({ event }) => !event.spotName?.trim());
-    const resolved = new Map<number, string>();
+      .filter(
+        ({ event, index }) => !event.spotName?.trim() && !routeNames.has(index),
+      );
+    const resolved = new Map<number, string>(routeNames);
     if (unresolved.length > 0 && this.routes.resolveNearbyAreas) {
       try {
         const names = await this.routes.resolveNearbyAreas(
@@ -983,6 +994,14 @@ function formatDistance(meters: number) {
 
 export function formatTravelDuration(durationSeconds: number) {
   return `約${Math.ceil(durationSeconds / 60)}分`;
+}
+
+function formatRouteDuration(route: TransitRoute) {
+  const duration = formatTravelDuration(route.durationSeconds);
+  const walkingMinutes = Math.ceil((route.destinationWalkSeconds ?? 0) / 60);
+  return walkingMinutes > 0
+    ? `${duration}（会場まで徒歩約${walkingMinutes}分含む）`
+    : duration;
 }
 
 export function formatTravelCost(route: TransitRoute) {
