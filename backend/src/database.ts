@@ -1,6 +1,6 @@
 import { Pool } from "pg";
 
-import { fallbackSpotName } from "./event-display.js";
+import { fallbackSpotName, formatEventTime } from "./event-display.js";
 import type { SearchDebugTimings } from "./search-timing.js";
 
 export type EventRow = {
@@ -1242,16 +1242,6 @@ function formatEventDate(date: Date) {
     month: "2-digit",
     day: "2-digit",
   }).format(date);
-}
-
-function formatEventTime(startsAt: Date, endsAt: Date) {
-  const formatter = new Intl.DateTimeFormat("ja-JP", {
-    timeZone: "Asia/Tokyo",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
-  return `${formatter.format(startsAt)}-${formatter.format(endsAt)}`;
 }
 
 const DEVELOPMENT_EVENTS = [

@@ -100,7 +100,12 @@ export class TransitApiClient {
           "transitRouting",
           "nearbyStationLookup",
           () => this.resolveNearbyArea(destination, signal),
-        ).catch(() => null),
+        ).catch((error) => {
+          console.warn("Transit current-location lookup failed", {
+            reason: error instanceof Error ? error.message : "unknown error",
+          });
+          return null;
+        }),
       ),
     );
   }
@@ -113,13 +118,22 @@ export class TransitApiClient {
     signal?: AbortSignal,
     timings?: SearchTimingCollector,
   ) {
-    const nearbyEndpoint = await measureSearchTiming(
-      timings,
-      "transitRouting",
-      "nearbyStationLookup",
-      () => this.resolveNearbyTransitEndpoint(destination, signal),
-    );
-    if (!nearbyEndpoint) return null;
+    let nearbyEndpoint: NearbyTransitEndpoint | null = null;
+    try {
+      nearbyEndpoint = await measureSearchTiming(
+        timings,
+        "transitRouting",
+        "nearbyStationLookup",
+        () => this.resolveNearbyTransitEndpoint(destination, signal),
+      );
+    } catch (error) {
+      console.warn("Transit venue station lookup unavailable", {
+        reason: error instanceof Error ? error.message : "unknown error",
+      });
+    }
+    const destinationEndpoint =
+      nearbyEndpoint?.endpoint ??
+      `geo:${destination.latitude},${destination.longitude}`;
 
     return measureSearchTiming(
       timings,
@@ -131,7 +145,7 @@ export class TransitApiClient {
           "from",
           `geo:${origin.latitude},${origin.longitude}`,
         );
-        url.searchParams.set("to", nearbyEndpoint.endpoint);
+        url.searchParams.set("to", destinationEndpoint);
         url.searchParams.set("date", formatTokyoDate(departureAt));
         url.searchParams.set("time", formatTokyoTime(departureAt));
         url.searchParams.set("type", "departure");
@@ -158,10 +172,9 @@ export class TransitApiClient {
           )
           .sort((left, right) => left.durationSecs - right.durationSecs)[0];
         if (!fastest) return null;
-        const destinationWalkSeconds = estimateDestinationWalkSeconds(
-          nearbyEndpoint,
-          destination,
-        );
+        const destinationWalkSeconds = nearbyEndpoint
+          ? estimateDestinationWalkSeconds(nearbyEndpoint, destination)
+          : 0;
         return {
           destinationIndex,
           travelMode: fastest.legs.some((leg) => leg.kind === "transit")
@@ -170,7 +183,9 @@ export class TransitApiClient {
           durationSeconds: fastest.durationSecs + destinationWalkSeconds,
           distanceMeters: haversineMeters(origin, destination),
           destinationWalkSeconds,
-          nearbyAreaName: nearbyEndpoint.areaName,
+          ...(nearbyEndpoint
+            ? { nearbyAreaName: nearbyEndpoint.areaName }
+            : {}),
           fare: normalizeFare(fastest.fare),
         };
       },
@@ -192,8 +207,31 @@ export class TransitApiClient {
     const body = await this.fetchNearbyPlaces(url, signal);
     const ordered = orderTransitPlaces(body.places, true);
     const nearest = ordered[0];
-    if (!nearest) return null;
-    return formatNearbyArea(nearest.name, nearest.kind);
+    if (nearest) return formatNearbyArea(nearest.name, nearest.kind);
+
+    const nearbyPlace = orderNearbyAreaPlaces(body.places)[0];
+    if (nearbyPlace) {
+      console.info("Transit current-location lookup is using a nearby place", {
+        kind: nearbyPlace.kind,
+        source: nearbyPlace.source ?? "unknown",
+      });
+      return formatNearbyArea(nearbyPlace.name, nearbyPlace.kind);
+    }
+
+    if (!nearest) {
+      console.info("Transit current-location lookup found no nearby area", {
+        placesReturned: body.places?.length ?? 0,
+        placeKinds: [
+          ...new Set(
+            (body.places ?? []).flatMap((place) =>
+              typeof place.kind === "string" ? [place.kind] : [],
+            ),
+          ),
+        ],
+      });
+      return null;
+    }
+    return null;
   }
 
   private async resolveNearbyTransitEndpoint(
@@ -303,6 +341,7 @@ type TransitPlacesResponse = {
 type TransitPlace = {
   name?: unknown;
   kind?: unknown;
+  source?: unknown;
   endpoint?: unknown;
   lat?: unknown;
   lon?: unknown;
@@ -325,6 +364,13 @@ type OrderedTransitPlace = {
   endpoint: string | null;
   latitude: number;
   longitude: number;
+  distanceMeters: number;
+};
+
+type OrderedNearbyAreaPlace = {
+  name: string;
+  kind: "place" | "address";
+  source: string | null;
   distanceMeters: number;
 };
 
@@ -376,6 +422,38 @@ function orderTransitPlaces(
       if (preferStations && left.kind !== right.kind) {
         return left.kind === "station" ? -1 : 1;
       }
+      return left.distanceMeters - right.distanceMeters;
+    });
+}
+
+function orderNearbyAreaPlaces(
+  places: TransitPlace[] | undefined,
+): OrderedNearbyAreaPlace[] {
+  return (places ?? [])
+    .filter(
+      (
+        place,
+      ): place is TransitPlace & {
+        name: string;
+        kind: "place" | "address";
+        distanceMeters: number;
+      } =>
+        (place.kind === "place" || place.kind === "address") &&
+        typeof place.name === "string" &&
+        place.name.trim().length > 0 &&
+        hasCoordinates(place) &&
+        typeof place.distanceMeters === "number" &&
+        Number.isFinite(place.distanceMeters) &&
+        place.distanceMeters >= 0,
+    )
+    .map((place) => ({
+      name: place.name.trim().slice(0, 100),
+      kind: place.kind,
+      source: typeof place.source === "string" ? place.source : null,
+      distanceMeters: place.distanceMeters,
+    }))
+    .sort((left, right) => {
+      if (left.kind !== right.kind) return left.kind === "address" ? -1 : 1;
       return left.distanceMeters - right.distanceMeters;
     });
 }
@@ -447,10 +525,16 @@ function hasCoordinates<T extends { lat?: unknown; lon?: unknown }>(
   );
 }
 
-function formatNearbyArea(name: string, kind: "station" | "stop") {
+function formatNearbyArea(
+  name: string,
+  kind: "station" | "stop" | "place" | "address",
+) {
   const normalizedName = name.trim().slice(0, 100);
-  return kind === "station"
-    ? `${normalizedName.endsWith("駅") ? normalizedName : `${normalizedName}駅`}周辺`
+  if (kind === "station") {
+    return `${normalizedName.endsWith("駅") ? normalizedName : `${normalizedName}駅`}周辺`;
+  }
+  return normalizedName.endsWith("周辺")
+    ? normalizedName
     : `${normalizedName}周辺`;
 }
 
