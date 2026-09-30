@@ -109,7 +109,7 @@ describe("local LLM recommendation service", () => {
       {
         locationResolver: { resolve: async () => "東京都 渋谷区" },
         routes: {
-          ...routeProvider(),
+          ...routeProvider(1_800, undefined, 300, "渋谷駅周辺"),
           resolveNearbyAreas: async (destinations) =>
             destinations.map(() => "渋谷駅周辺"),
         },
@@ -132,7 +132,8 @@ describe("local LLM recommendation service", () => {
     assert.equal(result.events[0]?.id, "evt-a");
     assert.equal(result.events[0]?.spotName, "渋谷駅周辺");
     assert.equal(persistedSpotNames.get("evt-a"), "渋谷駅周辺");
-    assert.equal(result.events[0]?.duration, "約30分");
+    assert.equal(result.events[0]?.duration, "約35分（会場まで徒歩約5分含む）");
+    assert.equal(result.events[0]?.travelDurationMinutes, 35);
     assert.equal(result.events[0]?.cost, "料金情報なし");
     assert.equal(loggedPersonalized, true);
     const timingResult = timings.snapshot();
@@ -237,9 +238,13 @@ describe("local LLM recommendation service", () => {
       },
       {
         locationResolver: { resolve: async () => "東京都 渋谷区" },
-        routes: routeProvider(3_601, (count) => {
-          routedDestinations = count;
-        }),
+        routes: routeProvider(
+          3_500,
+          (count) => {
+            routedDestinations = count;
+          },
+          200,
+        ),
         ollama,
         webSearch: { search: async () => [] },
       },
@@ -305,6 +310,88 @@ describe("local LLM recommendation service", () => {
       ),
     );
     assert.equal(result.events[0]?.id, "evt-db");
+  });
+
+  it("uses the nearby transit station when coordinate search cannot resolve a locality", async () => {
+    let localityResolverCalls = 0;
+    let nearbyLookupCoordinates:
+      { latitude: number; longitude: number } | undefined;
+    let emptyCacheRevalidated = false;
+    let searchedQuery = "";
+    const store = {
+      listPreferenceMemories: async () => [],
+      getDiscoveryCache: async () => ({
+        payload: [],
+        expiresAt: new Date(Date.now() + 60_000),
+      }),
+      setDiscoveryCache: async ({ expiresAt }: { expiresAt: Date }) => {
+        emptyCacheRevalidated = expiresAt.getTime() <= Date.now();
+      },
+      upsertDiscoveredEvents: async (events: DiscoveredEventInput[]) =>
+        events.map(toEventRow),
+      listActiveEvents: async () => [],
+      setEventEmbedding: async () => undefined,
+      findSimilarPreferenceMemories: async () => [],
+      recordRecommendationLog: async () => undefined,
+    } as unknown as EventStore;
+    const service = new LocalLlmRecommendationService(
+      store,
+      {
+        ollamaBaseUrl: "http://127.0.0.1:11434",
+        ollamaChatModel: "gemma4:e2b",
+        ollamaEmbeddingModel: "embeddinggemma:300m-qat-q4_0",
+      },
+      {
+        locationResolver: {
+          resolve: async () => {
+            localityResolverCalls += 1;
+            throw new Error("DuckDuckGo returned no location search results");
+          },
+        },
+        routes: {
+          ...routeProvider(),
+          resolveNearbyAreas: async (destinations) => {
+            nearbyLookupCoordinates = destinations[0];
+            return destinations.map(() => "渋谷駅周辺");
+          },
+        },
+        ollama: new OllamaClient(
+          "http://127.0.0.1:11434",
+          "gemma4:e2b",
+          "embeddinggemma:300m-qat-q4_0",
+          ollamaFetchStub(),
+        ),
+        webSearch: {
+          search: async (query) => {
+            searchedQuery = query;
+            return [];
+          },
+        },
+      },
+    );
+
+    const result = await service.search({
+      userId: "user-1",
+      query: "イベント",
+      latitude: 35.6595,
+      longitude: 139.7004,
+      limit: 10,
+      offset: 0,
+    });
+
+    assert.equal(localityResolverCalls, 0);
+    assert.deepEqual(nearbyLookupCoordinates, {
+      latitude: 35.6595,
+      longitude: 139.7004,
+    });
+    assert.match(searchedQuery, /渋谷駅周辺/u);
+    assert.equal(emptyCacheRevalidated, true);
+    assert.equal(result.meta.currentLocationProvider, "transit_api");
+    assert.ok(
+      !result.meta.degradedReasons.includes(
+        "current_location_resolution_unavailable",
+      ),
+    );
   });
 });
 
@@ -391,6 +478,8 @@ function vector(first: number, second: number) {
 function routeProvider(
   durationSeconds = 1_800,
   onDestinations?: (count: number) => void,
+  destinationWalkSeconds = 0,
+  nearbyAreaName?: string,
 ): RouteProvider {
   return {
     computeRoutes: async (_origin, destinations) => {
@@ -399,7 +488,9 @@ function routeProvider(
         destinationIndex,
         travelMode: "TRANSIT" as const,
         distanceMeters: 2_000,
-        durationSeconds,
+        durationSeconds: durationSeconds + destinationWalkSeconds,
+        destinationWalkSeconds,
+        nearbyAreaName,
         fare: null,
       }));
     },

@@ -84,12 +84,33 @@ export async function extractEventsFromHtml(input: {
   timings?: SearchTimingCollector;
 }) {
   const document = prepareDocument(input.html);
+  const sourceHost = getSourceHost(input.sourceUrl);
+  const pageSignals = {
+    sourceHost,
+    htmlLength: input.html.length,
+    visibleTextLength: document.contentText.length,
+    hasEventText: /イベント|開催|festival|event/iu.test(document.contentText),
+    hasDateText: /20\d{2}[年./-]|\d{1,2}月\d{1,2}日/u.test(
+      document.contentText,
+    ),
+  };
+  const jsonLdEventObjectCount = document.jsonLdValues
+    .flatMap(flattenJsonLd)
+    .filter(isEventObject).length;
   const deterministic = extractJsonLdEvents(
     input.sourceUrl,
     document.jsonLdValues,
     document.contentText,
   );
-  if (deterministic.length > 0 || !input.ollama) return deterministic;
+  if (deterministic.length > 0 || !input.ollama) {
+    if (deterministic.length === 0) {
+      console.info("Event page has no verified JSON-LD event", {
+        ...pageSignals,
+        jsonLdEventObjectCount,
+      });
+    }
+    return deterministic;
+  }
   const llmInput = [
     `SOURCE_URL: ${input.sourceUrl}`,
     "JSON_LD:",
@@ -99,6 +120,7 @@ export async function extractEventsFromHtml(input: {
   ]
     .join("\n")
     .slice(0, 16_000);
+  const sourceText = `${document.jsonLdText}\n${document.contentText}`;
   const result = await measureSearchTiming(
     input.timings,
     "gemmaAnalysis",
@@ -107,7 +129,7 @@ export async function extractEventsFromHtml(input: {
       input.ollama!.json(
         {
           system:
-            "公開ページからイベントを抽出してください。開始・終了日時と日本国内の会場住所が本文またはJSON-LDに明記されていないイベントはeventsへ入れないでください。住所の推測は禁止です。情報がなければ空配列を返してください。",
+            "公開ページからイベントを抽出してください。イベント名、開始日と終了日、会場名または会場住所が本文またはJSON-LDに明記されているイベントだけを返してください。開催時刻が記載されていない場合は日付だけを返し、時刻を推測しないでください。住所欄には本文に住所が明記されている場合だけそのまま記入し、ない場合は空文字にしてください。会場名はlocation欄に本文の表記どおり記入してください。イベント名、日付、会場名の推測は禁止です。条件を満たす情報がなければ空配列を返してください。",
           user: llmInput,
           schema: llmEventJsonSchema,
         },
@@ -115,16 +137,41 @@ export async function extractEventsFromHtml(input: {
         input.signal,
       ),
   );
-  return result.events.flatMap((event) => {
-    if (!event.address.trim() || !llmInput.includes(event.address.trim())) {
-      return [];
+  let missingVenueCount = 0;
+  let unverifiedVenueCount = 0;
+  let unverifiedNameCount = 0;
+  let invalidDateCount = 0;
+  let invalidRequiredFieldCount = 0;
+  const accepted: ExtractedEvent[] = [];
+  for (const event of result.events) {
+    const name = event.name.trim();
+    const location = event.location.trim();
+    const address = event.address.trim();
+    const sourceBackedAddress = address && sourceText.includes(address);
+    const sourceBackedLocation = location && sourceText.includes(location);
+    if (!sourceBackedAddress && !sourceBackedLocation) {
+      if (!address && !location) missingVenueCount += 1;
+      else unverifiedVenueCount += 1;
+      continue;
     }
-    return normalizeEvent({
-      name: event.name,
+    if (!name || !sourceText.includes(name)) {
+      unverifiedNameCount += 1;
+      continue;
+    }
+    if (
+      !parseDateTime(event.startDate, "start") ||
+      !parseDateTime(event.endDate, "end")
+    ) {
+      invalidDateCount += 1;
+      continue;
+    }
+    const verifiedLocation = sourceBackedLocation ? location : address;
+    const normalized = normalizeEvent({
+      name,
       startDate: event.startDate,
       endDate: event.endDate,
-      location: event.location,
-      address: event.address,
+      location: verifiedLocation,
+      address: sourceBackedAddress ? address : verifiedLocation,
       description: event.description,
       imageUri: optionalUrl(event.imageUrl),
       organizerName: event.organizerName,
@@ -133,7 +180,34 @@ export async function extractEventsFromHtml(input: {
       sourceUrl: input.sourceUrl,
       contentText: document.contentText,
     });
-  });
+    if (normalized.length === 0) {
+      invalidRequiredFieldCount += 1;
+      continue;
+    }
+    accepted.push(...normalized);
+  }
+  if (accepted.length === 0) {
+    console.info("Event page has no verified LLM event", {
+      ...pageSignals,
+      jsonLdEventObjectCount,
+      jsonLdAcceptedCount: deterministic.length,
+      llmCandidateCount: result.events.length,
+      missingVenueCount,
+      unverifiedVenueCount,
+      unverifiedNameCount,
+      invalidDateCount,
+      invalidRequiredFieldCount,
+    });
+  }
+  return accepted;
+}
+
+function getSourceHost(sourceUrl: string) {
+  try {
+    return new URL(sourceUrl).hostname;
+  } catch {
+    return "unknown";
+  }
 }
 
 function prepareDocument(html: string) {
@@ -168,7 +242,8 @@ function extractJsonLdEvents(
     .filter(isEventObject)
     .flatMap((value) => {
       const location = asObject(value.location);
-      const address = postalAddress(location?.address);
+      const address =
+        postalAddress(location?.address) || stringValue(location?.name);
       return normalizeEvent({
         name: stringValue(value.name),
         startDate: stringValue(value.startDate),
@@ -202,8 +277,8 @@ function normalizeEvent(input: {
   sourceUrl: string;
   contentText: string;
 }): ExtractedEvent[] {
-  const startsAt = parseDateTime(input.startDate);
-  const endsAt = parseDateTime(input.endDate);
+  const startsAt = parseDateTime(input.startDate, "start");
+  const endsAt = parseDateTime(input.endDate, "end");
   if (
     !input.name.trim() ||
     !input.location.trim() ||
@@ -288,12 +363,48 @@ function optionalEmail(value: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(trimmed) ? trimmed : null;
 }
 
-function parseDateTime(value: string) {
+function parseDateTime(value: string, boundary: "start" | "end") {
   const trimmed = value.trim();
-  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/u.test(trimmed)) return null;
-  const withZone = /(?:Z|[+-]\d{2}:?\d{2})$/u.test(trimmed)
-    ? trimmed
-    : `${trimmed}+09:00`;
+  const normalized = trimmed
+    .replace(/[（(](?:月|火|水|木|金|土|日)(?:曜日)?[)）]/u, "")
+    .replace(/年|月/gu, "-")
+    .replace(/日/u, "")
+    .replace(/\//gu, "-");
+  const dateParts =
+    /^(\d{4})-(\d{1,2})-(\d{1,2})(?:\s*T?(\d{1,2}):(\d{2})(?::(\d{2})(\.\d{1,3})?)?)?/u.exec(
+      normalized,
+    );
+  if (!dateParts) return null;
+  const suffix = normalized.slice(dateParts[0].length).trim();
+
+  const year = Number(dateParts[1]);
+  const month = Number(dateParts[2]);
+  const day = Number(dateParts[3]);
+  const calendarDate = new Date(Date.UTC(year, month - 1, day));
+  if (
+    calendarDate.getUTCFullYear() !== year ||
+    calendarDate.getUTCMonth() !== month - 1 ||
+    calendarDate.getUTCDate() !== day
+  ) {
+    return null;
+  }
+
+  if (dateParts[4] === undefined) {
+    if (suffix) return null;
+    const time = boundary === "start" ? "00:00:00" : "23:59:59.999";
+    const date = new Date(
+      `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}T${time}+09:00`,
+    );
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  const hour = String(dateParts[4]).padStart(2, "0");
+  const minute = dateParts[5];
+  const second = dateParts[6] ?? "00";
+  const fraction = dateParts[7] ?? "";
+  const dateTime = `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}T${hour}:${minute}:${second}${fraction}`;
+  if (suffix && !/^(?:Z|[+-]\d{2}:?\d{2})$/u.test(suffix)) return null;
+  const withZone = `${dateTime}${suffix || "+09:00"}`;
   const date = new Date(withZone);
   return Number.isNaN(date.getTime()) ? null : date;
 }
