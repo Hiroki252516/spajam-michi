@@ -197,6 +197,47 @@ describe("local LLM recommendation service", () => {
     assert.equal(saved[0]?.embedding, null);
   });
 
+  it("keeps events and uses a grounded fallback when a generated reason is contaminated", async () => {
+    const now = new Date();
+    const event = discoveredEvent("evt-a", "検証イベント", now, 35.66, 139.7);
+    const normalFetch = ollamaFetchStub();
+    const service = testService(
+      {
+        getDiscoveryCache: async () => ({
+          payload: [event],
+          expiresAt: new Date(now.getTime() + 60000),
+        }),
+      },
+      {
+        ollama: new OllamaClient(
+          "http://127.0.0.1:11434",
+          "gemma4:e2b",
+          "embeddinggemma:300m-qat-q4_0",
+          async (url, init) =>
+            String(url).endsWith("/api/chat")
+              ? Response.json({
+                  message: {
+                    content: JSON.stringify({
+                      reasons: { "evt-a": "展示です。}]}```python```json" },
+                    }),
+                  },
+                })
+              : normalFetch(url, init),
+        ),
+      },
+    );
+    const result = await service.search(searchInput());
+    assert.equal(result.total, 1);
+    assert.ok(
+      result.meta.degradedReasons.includes("recommendation_reason_unavailable"),
+    );
+    assert.equal(
+      result.events[0]?.recommendationReason,
+      "Transit APIの最短旅程で約30分、当日参加できるイベントです。",
+    );
+    assert.ok(!result.events[0]?.recommendationReason.includes("```"));
+  });
+
   it("excludes ended, next-day, and over-60-minute events", async () => {
     const now = new Date();
     const active = discoveredEvent("evt-active", "開催中", now, 35.66, 139.7);
@@ -792,17 +833,24 @@ function ollamaFetchStub() {
         ),
       });
     }
+    const body = JSON.parse(String(init?.body)) as {
+      messages: { role: string; content: string }[];
+    };
+    const userInput = JSON.parse(
+      body.messages.find((message) => message.role === "user")!.content,
+    ) as { events?: { eventId: string }[] };
     return Response.json({
       message: {
         role: "assistant",
         content: JSON.stringify({
-          reasons: [
-            {
-              eventId: "evt-a",
-              reason: "高評価した音楽の好みに近いイベントです。",
-            },
-            { eventId: "evt-b", reason: "現在地から移動可能なイベントです。" },
-          ],
+          reasons: Object.fromEntries(
+            (userInput.events ?? []).map((event) => [
+              event.eventId,
+              event.eventId === "evt-a"
+                ? "高評価した音楽の好みに近いイベントです。"
+                : "現在地から移動可能なイベントです。",
+            ]),
+          ),
         }),
       },
     });

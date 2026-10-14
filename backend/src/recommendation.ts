@@ -28,7 +28,8 @@ import {
   verifiedVenue,
 } from "./event-quality.js";
 import { GsiGeocoder, type Coordinates } from "./geocoding.js";
-import { OllamaClient } from "./ollama.js";
+import { OllamaClient, ollamaFailureReason } from "./ollama.js";
+import { generateRecommendationReasons } from "./recommendation-reasons.js";
 import { fetchPublicHtml } from "./safe-fetch.js";
 import {
   measureSearchTiming,
@@ -132,38 +133,6 @@ export interface RouteProvider {
 const preferenceTagsSchema = z.object({
   tags: z.array(z.string().min(1).max(30)).max(8),
 });
-
-const reasonsSchema = z.object({
-  reasons: z.array(
-    z.object({ eventId: z.string(), reason: z.string().min(1).max(120) }),
-  ),
-});
-
-const tagsJsonSchema = {
-  type: "object",
-  required: ["tags"],
-  properties: {
-    tags: { type: "array", maxItems: 8, items: { type: "string" } },
-  },
-} as const;
-
-const reasonsJsonSchema = {
-  type: "object",
-  required: ["reasons"],
-  properties: {
-    reasons: {
-      type: "array",
-      items: {
-        type: "object",
-        required: ["eventId", "reason"],
-        properties: {
-          eventId: { type: "string" },
-          reason: { type: "string" },
-        },
-      },
-    },
-  },
-} as const;
 
 export class LocalLlmRecommendationService implements EventRecommendationService {
   private readonly venueGeocoder: VenueGeocoder;
@@ -438,7 +407,7 @@ export class LocalLlmRecommendationService implements EventRecommendationService
           system:
             "レビューを外部送信しても個人情報にならない、一般的なイベント嗜好タグへ要約してください。人名、メール、電話番号、URL、場所の詳細は出力しないでください。",
           user: memoryText,
-          schema: tagsJsonSchema,
+          maxOutputTokens: 256,
         },
         preferenceTagsSchema,
       );
@@ -825,35 +794,23 @@ export class LocalLlmRecommendationService implements EventRecommendationService
     signal: AbortSignal,
     degradedReasons: string[],
   ) {
-    if (candidates.length === 0) return new Map<string, string>();
-    try {
-      const result = await this.ollama.json(
-        {
-          system:
-            "イベント候補ごとに、移動時間と一般化された嗜好タグを根拠に、簡潔な日本語の推薦理由を1文で作成してください。入力にない事実を追加しないでください。",
-          user: JSON.stringify({
-            preferenceKeywords,
-            events: candidates.map((candidate) => ({
-              eventId: candidate.event.id,
-              description: candidate.event.description,
-              travelMinutes: Math.ceil(candidate.route.durationSeconds / 60),
-              travelMode: candidate.route.travelMode,
-              preferenceScore: candidate.preferenceScore,
-            })),
-          }),
-          schema: reasonsJsonSchema,
-        },
-        reasonsSchema,
-        signal,
-      );
-      return new Map(
-        result.reasons.map(({ eventId, reason }) => [eventId, reason.trim()]),
-      );
-    } catch (error) {
-      degradedReasons.push("recommendation_reason_unavailable");
-      console.warn("Recommendation reason generation failed", error);
-      return new Map<string, string>();
-    }
+    return generateRecommendationReasons({
+      ollama: this.ollama,
+      candidates: candidates.map((candidate) => ({
+        eventId: candidate.event.id,
+        description: candidate.event.description,
+        travelMinutes: Math.ceil(candidate.route.durationSeconds / 60),
+        travelMode: candidate.route.travelMode,
+        preferenceScore: candidate.preferenceScore,
+      })),
+      preferenceKeywords,
+      signal,
+      onFailure: (error) => {
+        degradedReasons.push("recommendation_reason_unavailable");
+        degradedReasons.push(ollamaFailureReason(error));
+        console.warn("Recommendation reason generation failed", error);
+      },
+    });
   }
 
   private async embedBestEffort(

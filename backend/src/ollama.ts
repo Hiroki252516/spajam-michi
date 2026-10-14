@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import type { WebSearchResult } from "./duckduckgo.js";
+import { hasCleanModelFields } from "./llm-output.js";
 import {
   measureSearchTiming,
   type SearchTimingCollector,
@@ -18,7 +19,27 @@ type OllamaToolCall = {
 
 type OllamaChatResponse = {
   message?: OllamaMessage;
+  done?: boolean;
+  done_reason?: string;
 };
+
+export class OllamaOutputError extends Error {
+  constructor(
+    readonly reason:
+      "output_limit" | "invalid_json" | "invalid_structure" | "invalid_text",
+  ) {
+    super(`Ollama structured output rejected: ${reason}`);
+    this.name = "OllamaOutputError";
+  }
+}
+
+export function ollamaFailureReason(error: unknown, signal?: AbortSignal) {
+  if (error instanceof OllamaOutputError) return `ollama_${error.reason}`;
+  if (signal?.aborted) return "event_discovery_timeout";
+  if (error instanceof Error && error.name === "TimeoutError")
+    return "ollama_request_timeout";
+  return "ollama_request_unavailable";
+}
 
 const searchArgumentsSchema = z.object({ query: z.string().min(1).max(160) });
 
@@ -86,7 +107,7 @@ export class OllamaClient {
     ];
     const collected: WebSearchResult[] = [];
     let remainingCalls = 3;
-    while (remainingCalls > 0) {
+    for (let turn = 0; turn < 3 && remainingCalls > 0; turn += 1) {
       const response = await measureSearchTiming(
         timings,
         "gemmaAnalysis",
@@ -102,21 +123,15 @@ export class OllamaClient {
                     name: "search_events",
                     description:
                       "DuckDuckGoで一般公開されているイベントページを検索する",
-                    parameters: {
-                      type: "object",
-                      required: ["query"],
-                      properties: {
-                        query: {
-                          type: "string",
-                          description: "地域名、日付、イベント種別を含む検索語",
-                        },
-                      },
-                    },
+                    parameters: z.toJSONSchema(searchArgumentsSchema, {
+                      target: "draft-7",
+                    }),
                   },
                 },
               ],
             },
             signal,
+            256,
           ),
       );
       const message = response.message;
@@ -126,6 +141,7 @@ export class OllamaClient {
       if (calls.length === 0) break;
       for (const call of calls) {
         if (remainingCalls === 0) break;
+        remainingCalls -= 1;
         if (call.function.name !== "search_events") {
           messages.push({
             role: "tool",
@@ -133,7 +149,6 @@ export class OllamaClient {
           });
           continue;
         }
-        remainingCalls -= 1;
         const parsed = searchArgumentsSchema.safeParse(
           parseToolArguments(call.function.arguments),
         );
@@ -150,29 +165,47 @@ export class OllamaClient {
           role: "tool",
           content: JSON.stringify(results.slice(0, 8)),
         });
+        if (collected.length > 0) break;
       }
+      // Search results are already usable; no extra completion is needed.
+      if (collected.length > 0) break;
     }
     return deduplicateResults(collected);
   }
 
   async json<T>(
-    input: { system: string; user: string; schema: Record<string, unknown> },
+    input: { system: string; user: string; maxOutputTokens?: number },
     parser: z.ZodType<T>,
     signal?: AbortSignal,
   ) {
+    const schema = z.toJSONSchema(parser, { target: "draft-7" });
     const response = await this.chat(
       {
         messages: [
-          { role: "system", content: input.system },
+          {
+            role: "system",
+            content: `${input.system}\n出力は次のJSONスキーマに一致するJSONだけにしてください。Markdownやコードブロックは不要です。\n${JSON.stringify(schema)}`,
+          },
           { role: "user", content: input.user },
         ],
-        format: input.schema,
+        format: schema,
       },
       signal,
+      input.maxOutputTokens ?? 1024,
     );
     const content = response.message?.content;
-    if (!content) throw new Error("Ollama returned empty structured output");
-    return parser.parse(JSON.parse(content));
+    if (!content) throw new OllamaOutputError("invalid_json");
+    let value: unknown;
+    try {
+      value = JSON.parse(content);
+    } catch {
+      throw new OllamaOutputError("invalid_json");
+    }
+    if (!hasCleanModelFields(value))
+      throw new OllamaOutputError("invalid_text");
+    const parsed = parser.safeParse(value);
+    if (!parsed.success) throw new OllamaOutputError("invalid_structure");
+    return parsed.data;
   }
 
   private chat(
@@ -182,7 +215,16 @@ export class OllamaClient {
       format?: Record<string, unknown>;
     },
     signal?: AbortSignal,
+    maxOutputTokens = 1024,
   ) {
+    if (
+      !Number.isInteger(maxOutputTokens) ||
+      maxOutputTokens < 1 ||
+      maxOutputTokens > 4096
+    )
+      throw new RangeError(
+        "Ollama output token limit must be between 1 and 4096",
+      );
     return this.request<OllamaChatResponse>(
       "/api/chat",
       {
@@ -190,11 +232,21 @@ export class OllamaClient {
         stream: false,
         think: false,
         keep_alive: "10m",
-        options: { temperature: 0 },
+        options: {
+          temperature: 0,
+          num_predict: maxOutputTokens,
+          ...(input.format ? { stop: ["```"] } : {}),
+        },
         ...input,
       },
       signal,
-    );
+    ).then((response) => {
+      if (response.done_reason === "length")
+        throw new OllamaOutputError("output_limit");
+      if (response.done === false)
+        throw new OllamaOutputError("invalid_structure");
+      return response;
+    });
   }
 
   private async request<T>(path: string, body: unknown, signal?: AbortSignal) {

@@ -4,7 +4,7 @@ import {
   type ExtractedEvent,
 } from "./event-extractor.js";
 import { eventIdentity } from "./event-quality.js";
-import type { OllamaClient } from "./ollama.js";
+import { ollamaFailureReason, type OllamaClient } from "./ollama.js";
 import { fetchPublicHtml } from "./safe-fetch.js";
 import {
   measureSearchTiming,
@@ -120,8 +120,14 @@ export class EventPageCrawler {
               timings: this.options.timings,
             })),
           );
-        } catch {
+        } catch (error) {
           this.options.onIssue("ollama_extraction_unavailable");
+          const reason = ollamaFailureReason(error, this.options.signal);
+          this.options.onIssue(reason);
+          console.warn("Event page model extraction failed", {
+            sourceHost: new URL(page.url).hostname,
+            reason,
+          });
           this.extracted.push(
             ...(await extractEventsFromHtml({
               sourceUrl: page.url,

@@ -29,58 +29,23 @@ export type ExtractedEvent = {
 };
 
 const llmEventSchema = z.object({
-  events: z.array(
-    z.object({
-      name: z.string(),
-      startDate: z.string(),
-      endDate: z.string(),
-      location: z.string(),
-      address: z.string(),
-      description: z.string(),
-      imageUrl: z.string(),
-      organizerName: z.string(),
-      organizerContactEmail: z.string(),
-      tags: z.array(z.string()),
-    }),
-  ),
+  events: z
+    .array(
+      z.object({
+        name: z.string().max(200),
+        startDate: z.string().max(40),
+        endDate: z.string().max(40),
+        location: z.string().max(300),
+        address: z.string().max(300),
+        description: z.string().max(500),
+        imageUrl: z.string().max(2048),
+        organizerName: z.string().max(200),
+        organizerContactEmail: z.string().max(254),
+        tags: z.array(z.string().max(30)).max(8),
+      }),
+    )
+    .max(4),
 });
-
-const llmEventJsonSchema = {
-  type: "object",
-  required: ["events"],
-  properties: {
-    events: {
-      type: "array",
-      items: {
-        type: "object",
-        required: [
-          "name",
-          "startDate",
-          "endDate",
-          "location",
-          "address",
-          "description",
-          "imageUrl",
-          "organizerName",
-          "organizerContactEmail",
-          "tags",
-        ],
-        properties: {
-          name: { type: "string" },
-          startDate: { type: "string" },
-          endDate: { type: "string" },
-          location: { type: "string" },
-          address: { type: "string" },
-          description: { type: "string" },
-          imageUrl: { type: "string" },
-          organizerName: { type: "string" },
-          organizerContactEmail: { type: "string" },
-          tags: { type: "array", items: { type: "string" } },
-        },
-      },
-    },
-  },
-} as const;
 
 export async function extractEventsFromHtml(input: {
   sourceUrl: string;
@@ -149,7 +114,7 @@ export async function extractEventsFromHtml(input: {
           system:
             "公開ページからイベントを抽出してください。イベント名、開始日と終了日、会場名または会場住所が本文またはJSON-LDに明記されているイベントだけを返してください。開催時刻が記載されていない場合は日付だけを返し、時刻を推測しないでください。住所欄には本文に住所が明記されている場合だけそのまま記入し、ない場合は空文字にしてください。会場名はlocation欄に本文の表記どおり記入してください。イベント名、日付、会場名の推測は禁止です。条件を満たす情報がなければ空配列を返してください。",
           user: llmInput,
-          schema: llmEventJsonSchema,
+          maxOutputTokens: 1024,
         },
         llmEventSchema,
         input.signal,
