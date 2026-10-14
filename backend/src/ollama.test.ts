@@ -6,12 +6,23 @@ import { OllamaClient } from "./ollama.js";
 describe("Ollama client", () => {
   it("times out a stalled model request without aborting the search", async () => {
     let requestSignal: AbortSignal | undefined;
-    const fakeFetch = (async (_input: URL | RequestInfo, init?: RequestInit) => {
+    const fakeFetch = (async (
+      _input: URL | RequestInfo,
+      init?: RequestInit,
+    ) => {
       requestSignal = init?.signal as AbortSignal | undefined;
       return new Promise<Response>((_resolve, reject) => {
+        // A real HTTP request keeps the event loop alive; AbortSignal.timeout alone does not.
+        const guard = setTimeout(
+          () => reject(new Error("Request abort was not delivered")),
+          1000,
+        );
         requestSignal?.addEventListener(
           "abort",
-          () => reject(requestSignal?.reason),
+          () => {
+            clearTimeout(guard);
+            reject(requestSignal?.reason);
+          },
           { once: true },
         );
       });
@@ -27,6 +38,7 @@ describe("Ollama client", () => {
 
     await assert.rejects(
       ollama.embed(["イベント検索"], searchController.signal),
+      { name: "TimeoutError" },
     );
     assert.equal(requestSignal?.aborted, true);
     assert.equal(searchController.signal.aborted, false);

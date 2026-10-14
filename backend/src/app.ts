@@ -6,7 +6,7 @@ import { AuthService } from "./auth.js";
 import type { EventRow, EventStore } from "./database.js";
 import { ApiError } from "./errors.js";
 import { fallbackSpotName } from "./event-display.js";
-import { LocationResolutionError } from "./geocoding.js";
+import { normalizeSearchArea } from "./event-quality.js";
 import {
   RoutingUnavailableError,
   type EventSearchResult,
@@ -69,6 +69,14 @@ export function createApp(
       "longitude",
     );
     const query = context.req.query("q")?.trim() || "イベント";
+    const area = normalizeSearchArea(context.req.query("area"));
+    if (!area) {
+      throw new ApiError(
+        400,
+        "AREA_REQUIRED",
+        "現在地の市区町村を取得し、現在地から再検索してください。",
+      );
+    }
     if (query.length > 100) {
       throw new ApiError(400, "INVALID_QUERY", "検索キーワードが長すぎます");
     }
@@ -92,6 +100,7 @@ export function createApp(
       query,
       latitude,
       longitude,
+      area,
       limit,
       offset,
       debugRequested,
@@ -192,7 +201,11 @@ export function createApp(
     const location = await readArrivalLocation(context.req.raw);
     const event = await database.findEvent(context.req.param("eventId"));
     if (!event) {
-      throw new ApiError(404, "EVENT_NOT_FOUND", "指定されたイベントが見つかりません。");
+      throw new ApiError(
+        404,
+        "EVENT_NOT_FOUND",
+        "指定されたイベントが見つかりません。",
+      );
     }
     if (
       distanceInMeters(location, {
@@ -362,6 +375,7 @@ async function runEventSearchJob(input: {
   query: string;
   latitude: number;
   longitude: number;
+  area: string;
   limit: number;
   offset: number;
   debugRequested: boolean;
@@ -376,6 +390,7 @@ async function runEventSearchJob(input: {
       query: input.query,
       latitude: input.latitude,
       longitude: input.longitude,
+      area: input.area,
       limit: input.limit,
       offset: input.offset,
       timings,
@@ -398,10 +413,6 @@ async function runEventSearchJob(input: {
       errorCode = "ROUTING_UNAVAILABLE";
       errorMessage =
         "現在、移動時間を計算できません。しばらくしてからお試しください。";
-    } else if (error instanceof LocationResolutionError) {
-      errorCode = "LOCATION_RESOLUTION_UNAVAILABLE";
-      errorMessage =
-        "DuckDuckGoの検索結果から現在地の地域名を確認できませんでした。";
     }
     const debugTimings = timings?.snapshot() ?? null;
     if (debugTimings) timings!.logSummary("failed", debugTimings);
@@ -520,7 +531,11 @@ function distanceInMeters(
     Math.cos((first.latitude * Math.PI) / 180) *
       Math.cos((second.latitude * Math.PI) / 180) *
       Math.sin(longitudeDelta / 2) ** 2;
-  return 2 * earthRadiusMeters * Math.atan2(Math.sqrt(haversine), Math.sqrt(1 - haversine));
+  return (
+    2 *
+    earthRadiusMeters *
+    Math.atan2(Math.sqrt(haversine), Math.sqrt(1 - haversine))
+  );
 }
 
 function parseInteger(

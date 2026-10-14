@@ -15,16 +15,19 @@ import {
   type WebSearchProvider,
   type WebSearchResult,
 } from "./duckduckgo.js";
+import { type ExtractedEvent } from "./event-extractor.js";
+import { canonicalPageUrl, EventPageCrawler } from "./event-pages.js";
 import {
-  extractEventsFromHtml,
-  type ExtractedEvent,
-} from "./event-extractor.js";
-import { areaNameFromAddress } from "./event-display.js";
-import {
-  DuckDuckGoCoordinateResolver,
-  GsiGeocoder,
-  type Coordinates,
-} from "./geocoding.js";
+  closingTime,
+  eventIdentity,
+  isDetailedAddress,
+  isSpecificVenueName,
+  neighborhoodName,
+  normalizeSearchArea,
+  uniqueEvents,
+  verifiedVenue,
+} from "./event-quality.js";
+import { GsiGeocoder, type Coordinates } from "./geocoding.js";
 import { OllamaClient } from "./ollama.js";
 import { fetchPublicHtml } from "./safe-fetch.js";
 import {
@@ -39,7 +42,6 @@ import {
   type TravelMode,
 } from "./transit.js";
 
-const EVENT_PAGE_PROCESSING_CONCURRENCY = 1;
 const MAX_EVENT_PAGES_PER_SEARCH = 4;
 const MAX_ALTERNATE_EVENT_PAGES = 2;
 
@@ -62,7 +64,7 @@ export type EventSearchResult = {
     generatedAt: string;
     routingProvider: "transit_api";
     geocodingProvider: "gsi";
-    currentLocationProvider: "duckduckgo" | "transit_api";
+    currentLocationProvider: "device_geocoder";
     degradedReasons: string[];
     travelAdvisory: string;
     debugTimings?: SearchDebugTimings;
@@ -75,6 +77,7 @@ export interface EventRecommendationService {
     query: string;
     latitude: number;
     longitude: number;
+    area: string;
     limit: number;
     offset: number;
     timings?: SearchTimingCollector;
@@ -106,14 +109,6 @@ type RankedCandidate = {
   totalScore: number;
   memories: PreferenceMemoryRow[];
 };
-
-export interface CurrentLocationResolver {
-  resolve(
-    coordinates: Coordinates,
-    signal?: AbortSignal,
-    timings?: SearchTimingCollector,
-  ): Promise<string>;
-}
 
 export interface VenueGeocoder {
   geocode(address: string, signal?: AbortSignal): Promise<Coordinates>;
@@ -171,7 +166,6 @@ const reasonsJsonSchema = {
 } as const;
 
 export class LocalLlmRecommendationService implements EventRecommendationService {
-  private readonly locationResolver: CurrentLocationResolver;
   private readonly venueGeocoder: VenueGeocoder;
   private readonly routes: RouteProvider;
   private readonly ollama: OllamaClient;
@@ -179,16 +173,17 @@ export class LocalLlmRecommendationService implements EventRecommendationService
   private readonly searchTimeoutMs: number;
   private readonly pageTimeoutMs: number;
   private readonly cacheTtlMs: number;
+  private readonly pageFetcher: typeof fetchPublicHtml;
 
   constructor(
     private readonly store: EventStore,
     config: RecommendationConfig,
     dependencies: {
-      locationResolver?: CurrentLocationResolver;
       venueGeocoder?: VenueGeocoder;
       routes?: RouteProvider;
       ollama?: OllamaClient;
       webSearch?: WebSearchProvider;
+      pageFetcher?: typeof fetchPublicHtml;
     } = {},
   ) {
     this.ollama =
@@ -202,15 +197,13 @@ export class LocalLlmRecommendationService implements EventRecommendationService
       );
     this.webSearch =
       dependencies.webSearch ?? new DuckDuckGoHtmlSearchProvider();
-    this.locationResolver =
-      dependencies.locationResolver ??
-      new DuckDuckGoCoordinateResolver(this.webSearch, this.ollama);
     this.venueGeocoder = dependencies.venueGeocoder ?? new GsiGeocoder();
     this.routes =
       dependencies.routes ?? new TransitApiClient(config.transitApiBaseUrl);
     this.searchTimeoutMs = config.searchTimeoutMs ?? 120_000;
     this.pageTimeoutMs = config.pageTimeoutMs ?? 5_000;
     this.cacheTtlMs = config.cacheTtlMs ?? 15 * 60_000;
+    this.pageFetcher = dependencies.pageFetcher ?? fetchPublicHtml;
   }
 
   async search(input: {
@@ -218,11 +211,18 @@ export class LocalLlmRecommendationService implements EventRecommendationService
     query: string;
     latitude: number;
     longitude: number;
+    area: string;
     limit: number;
     offset: number;
     timings?: SearchTimingCollector;
   }) {
     const signal = AbortSignal.timeout(this.searchTimeoutMs);
+    const discoverySignal = AbortSignal.any([
+      signal,
+      AbortSignal.timeout(Math.min(75_000, this.searchTimeoutMs * 0.625)),
+    ]);
+    const area = normalizeSearchArea(input.area);
+    if (!area) throw new Error("Current municipality is required");
     const now = new Date();
     const bounds = tokyoDayBounds(now);
     const degradedReasons: string[] = [];
@@ -235,36 +235,7 @@ export class LocalLlmRecommendationService implements EventRecommendationService
     );
     const preferenceKeywords = preferredKeywords(memories);
     let source: EventSearchResult["meta"]["source"] = "live";
-    let area: string | null = null;
-    let currentLocationProvider: EventSearchResult["meta"]["currentLocationProvider"] =
-      "duckduckgo";
-    if (this.routes.resolveNearbyAreas) {
-      try {
-        const [nearbyArea] = await this.routes.resolveNearbyAreas(
-          [origin],
-          signal,
-          input.timings,
-        );
-        if (nearbyArea) {
-          area = nearbyArea;
-          currentLocationProvider = "transit_api";
-        }
-      } catch (error) {
-        console.warn("Transit locality resolution unavailable", error);
-      }
-    }
-    if (!area) {
-      try {
-        area = await this.locationResolver.resolve(
-          origin,
-          signal,
-          input.timings,
-        );
-      } catch (error) {
-        degradedReasons.push("current_location_resolution_unavailable");
-        console.warn("DuckDuckGo locality resolution unavailable", error);
-      }
-    }
+    const currentLocationProvider = "device_geocoder" as const;
 
     let events: EventRow[] = [];
     if (area) {
@@ -275,7 +246,7 @@ export class LocalLlmRecommendationService implements EventRecommendationService
           preferenceKeywords,
           bounds,
           now,
-          signal,
+          signal: discoverySignal,
           degradedReasons,
           timings: input.timings,
         });
@@ -287,25 +258,28 @@ export class LocalLlmRecommendationService implements EventRecommendationService
       }
     }
 
-    if (!area) {
-      input.timings?.skip("gemmaAnalysis", "current_location_unavailable");
-      input.timings?.skip("eventPageFetch", "current_location_unavailable");
-      input.timings?.skip("gsiGeocoding", "current_location_unavailable");
-    }
-
+    const candidateTime = new Date();
+    const candidateBounds = tokyoDayBounds(candidateTime);
     if (events.length === 0) {
       source = "database_fallback";
       events = await this.store.listActiveEvents({
         query: input.query === "イベント" ? "" : input.query,
-        startsBefore: bounds.end,
-        endsAfter: now,
-        limit: 20,
+        startsBefore: candidateBounds.end,
+        endsAfter: candidateTime,
+        origin,
+        limit: 100,
       });
     }
 
-    const candidates = events
-      .filter((event) => isActiveToday(event, now, bounds))
-      .slice(0, 20);
+    const candidates = uniqueEvents(
+      events.filter(
+        (event) =>
+          verifiedVenue(event, candidateTime) &&
+          isActiveToday(event, candidateTime, candidateBounds) &&
+          (closingTime(event, candidateTime)?.getTime() ?? Infinity) >
+            candidateTime.getTime(),
+      ),
+    ).slice(0, 20);
     if (candidates.length === 0) {
       input.timings?.skip("transitRouting", "no_candidates");
     }
@@ -316,6 +290,7 @@ export class LocalLlmRecommendationService implements EventRecommendationService
       "gsiGeocoding",
     ]);
     let routes: (TransitRoute | null)[];
+    const departureAt = new Date();
     try {
       routes = await this.routes.computeRoutes(
         origin,
@@ -323,7 +298,7 @@ export class LocalLlmRecommendationService implements EventRecommendationService
           latitude: event.latitude,
           longitude: event.longitude,
         })),
-        now,
+        departureAt,
         signal,
         input.timings,
       );
@@ -337,21 +312,28 @@ export class LocalLlmRecommendationService implements EventRecommendationService
     const enrichedCandidates = await this.attachSpotNames(
       candidates,
       routes,
-      signal,
-      input.timings,
       degradedReasons,
     );
     input.timings?.logStages(["transitRouting"]);
 
     const routable = enrichedCandidates.flatMap((event, index) => {
       const route = routes[index];
-      return route && route.durationSeconds <= 3_600 ? [{ event, route }] : [];
+      const close = closingTime(event, departureAt) ?? event.endsAt;
+      return route &&
+        route.durationSeconds <= 3_600 &&
+        (!close ||
+          departureAt.getTime() + route.durationSeconds * 1000 <
+            close.getTime())
+        ? [{ event, route }]
+        : [];
     });
     console.info("Event search routing completed", {
       activeCandidateCount: candidates.length,
       routesFoundCount: routes.filter((route) => route !== null).length,
       withinOneHourRouteCount: routable.length,
     });
+    if (candidates.length === 0) degradedReasons.push("no_verified_events");
+    else if (routable.length === 0) degradedReasons.push("no_reachable_events");
     const ranked = await measureSearchTiming(
       input.timings,
       "ragRecommendation",
@@ -497,59 +479,20 @@ export class LocalLlmRecommendationService implements EventRecommendationService
   private async attachSpotNames(
     events: EventRow[],
     routes: (TransitRoute | null)[],
-    signal: AbortSignal,
-    timings: SearchTimingCollector | undefined,
     degradedReasons: string[],
   ) {
-    const routeNames = new Map<number, string>();
-    events.forEach((event, index) => {
-      const name = routes[index]?.nearbyAreaName?.trim();
-      if (!event.spotName?.trim() && name) {
-        routeNames.set(index, name.slice(0, 120));
-      }
-    });
-    const unresolved = events
-      .map((event, index) => ({ event, index }))
-      .filter(
-        ({ event, index }) => !event.spotName?.trim() && !routeNames.has(index),
-      );
-    const resolved = new Map<number, string>(routeNames);
-    if (unresolved.length > 0 && this.routes.resolveNearbyAreas) {
-      try {
-        const names = await this.routes.resolveNearbyAreas(
-          unresolved.map(({ event }) => ({
-            latitude: event.latitude,
-            longitude: event.longitude,
-          })),
-          signal,
-          timings,
-        );
-        unresolved.forEach(({ index }, resultIndex) => {
-          const name = names[resultIndex]?.trim();
-          if (name) resolved.set(index, name.slice(0, 120));
-        });
-      } catch (error) {
-        degradedReasons.push("nearby_area_resolution_unavailable");
-        console.warn("Nearby station resolution unavailable", error);
-      }
-    }
     return Promise.all(
       events.map(async (event, index) => {
+        const station = routes[index]?.nearbyAreaName?.trim();
         const spotName =
-          event.spotName?.trim() ||
-          resolved.get(index) ||
-          areaNameFromAddress(event.location) ||
-          "周辺エリア情報なし";
-        if (
-          !event.spotName &&
-          spotName !== "周辺エリア情報なし" &&
-          this.store.updateEventSpotName
-        ) {
+          station && /(?:駅|停留所)周辺$/u.test(station)
+            ? station
+            : neighborhoodName(event.location);
+        if (spotName !== event.spotName && this.store.updateEventSpotName) {
           try {
             await this.store.updateEventSpotName(event.id, spotName);
-          } catch (error) {
+          } catch {
             degradedReasons.push("spot_name_persistence_unavailable");
-            console.warn("Spot name persistence failed", error);
           }
         }
         return { ...event, spotName };
@@ -571,218 +514,185 @@ export class LocalLlmRecommendationService implements EventRecommendationService
       [input.query, ...input.preferenceKeywords].join(" "),
     );
     const cacheKey = createHash("sha256")
-      .update(`${input.bounds.dateKey}\n${input.area}\n${normalizedQuery}`)
+      .update(
+        `verified-v2\n${input.bounds.dateKey}\n${input.area}\n${normalizedQuery}`,
+      )
       .digest("hex");
     const cached = await this.store.getDiscoveryCache(cacheKey);
-    if (cached && cached.payload.length > 0) {
+    const cachedEvents =
+      cached?.payload.filter((event) => verifiedVenue(event, input.now)) ?? [];
+    if (cachedEvents.length > 0) {
       input.timings?.skip("eventPageFetch", "discovery_cache_hit");
       input.timings?.skip("gsiGeocoding", "discovery_cache_hit");
-      return { events: cached.payload, source: "cache" as const };
+      return { events: cachedEvents, source: "cache" as const };
     }
-    if (cached) {
-      console.info("Empty event discovery cache skipped", {
-        cachedEventCount: cached.payload.length,
-      });
-    }
-
-    const executeSearch = (
-      requestedQuery: string,
-      signal?: AbortSignal,
-      dateTerm = input.bounds.dateKey,
-    ) => {
-      const finalQuery = sanitizeSearchTerms(
-        [input.area, dateTerm, requestedQuery].filter(Boolean).join(" "),
-      );
-      return measureSearchTiming(
+    const onIssue = (reason: string) => input.degradedReasons.push(reason);
+    const executeSearch = (requestedQuery: string, signal = input.signal) =>
+      measureSearchTiming(
         input.timings,
         "duckDuckGoSearch",
         "eventDiscoverySearch",
-        () => this.webSearch.search(finalQuery, 8, signal),
+        () =>
+          this.webSearch.search(
+            sanitizeSearchTerms(`${input.area} ${requestedQuery}`),
+            8,
+            signal,
+            onIssue,
+          ),
       );
-    };
     let searchResults: WebSearchResult[] = [];
     try {
-      searchResults = await this.ollama.searchWithTool(
-        {
-          area: input.area,
-          date: input.bounds.dateKey,
-          query: input.query,
-          preferenceKeywords: input.preferenceKeywords,
-        },
-        executeSearch,
-        input.signal,
-        input.timings,
-      );
-    } catch (error) {
-      input.degradedReasons.push("ollama_search_planning_unavailable");
-      console.warn("Ollama search planning unavailable", error);
-    }
-    if (searchResults.length === 0) {
-      searchResults = await executeSearch(
-        `${input.query} ${input.preferenceKeywords.join(" ")} イベント`,
-        input.signal,
+      searchResults = await executeSearch(`${normalizedQuery} イベント`);
+    } catch {
+      onIssue(
+        input.signal.aborted
+          ? "event_discovery_timeout"
+          : "event_search_unavailable",
       );
     }
-    console.info("Event discovery search completed", {
-      searchResultCount: searchResults.length,
+    // Broaden before a single site's descendants consume the page budget.
+    if (searchResults.length < 20 && !input.signal.aborted) {
+      try {
+        searchResults.push(
+          ...(await executeSearch(
+            `今日 開催イベント ${input.query === "イベント" ? "" : input.query}`,
+          )),
+        );
+      } catch {
+        onIssue(
+          input.signal.aborted
+            ? "event_discovery_timeout"
+            : "event_search_unavailable",
+        );
+      }
+    }
+    if (!searchResults.length && !input.signal.aborted) {
+      try {
+        searchResults = await this.ollama.searchWithTool(
+          {
+            area: input.area,
+            date: input.bounds.dateKey,
+            query: input.query,
+            preferenceKeywords: input.preferenceKeywords,
+          },
+          executeSearch,
+          input.signal,
+          input.timings,
+        );
+      } catch {
+        onIssue("ollama_search_planning_unavailable");
+      }
+    }
+    const eligibleRoots = searchResults.filter((result) => {
+      try {
+        return !/^(?:www\.)?google\.|^map\.yahoo\.|^maps\./u.test(
+          new URL(result.url).hostname,
+        );
+      } catch {
+        return false;
+      }
     });
-    const processSearchResults = (results: WebSearchResult[]) =>
-      mapSettledWithConcurrency(
-        results,
-        EVENT_PAGE_PROCESSING_CONCURRENCY,
-        async (result) => {
-          const page = await measureSearchTiming(
-            input.timings,
-            "eventPageFetch",
-            "publicPageFetch",
-            () =>
-              fetchPublicHtml(result.url, {
-                signal: input.signal,
-                timeoutMs: this.pageTimeoutMs,
-              }),
-          );
-          try {
-            return await extractEventsFromHtml({
-              sourceUrl: page.url,
-              html: page.html,
-              ollama: this.ollama,
-              signal: input.signal,
-              timings: input.timings,
-            });
-          } catch (error) {
-            input.degradedReasons.push("ollama_extraction_unavailable");
-            console.warn("LLM extraction failed", error);
-            return extractEventsFromHtml({
-              sourceUrl: page.url,
-              html: page.html,
-              signal: input.signal,
-            });
-          }
-        },
-      );
-    let selectedSearchResults = selectDiverseSearchResults(
-      searchResults,
-      MAX_EVENT_PAGES_PER_SEARCH,
+    const rootPriority = (result: WebSearchResult) => {
+      const url = new URL(result.url);
+      if (url.hostname === "www.walkerplus.com")
+        return /^\/event\//u.test(url.pathname) ? 0 : 1;
+      return /\/(?:events?|eventinfo)\//u.test(url.pathname) ? 2 : 3;
+    };
+    const seenRoots = new Set<string>();
+    const roots = eligibleRoots
+      .sort((left, right) => rootPriority(left) - rootPriority(right))
+      .filter((result) => {
+        const key = canonicalSearchUrl(result);
+        if (seenRoots.has(key)) return false;
+        seenRoots.add(key);
+        return true;
+      });
+    const crawler = new EventPageCrawler({
+      signal: input.signal,
+      timeoutMs: this.pageTimeoutMs,
+      ollama: this.ollama,
+      timings: input.timings,
+      onIssue,
+      fetchPage: this.pageFetcher,
+    });
+    await crawler.crawl(
+      selectDiverseSearchResults(
+        roots,
+        MAX_EVENT_PAGES_PER_SEARCH + MAX_ALTERNATE_EVENT_PAGES,
+      ).map((result) => result.url),
     );
-    let pages = await processSearchResults(selectedSearchResults);
-    const parsedEventsFromPages = (processedPages: typeof pages) =>
-      deduplicateExtractedEvents(
-        processedPages.flatMap((page) =>
-          page.status === "fulfilled" ? page.value : [],
-        ),
-      );
-    const filterActiveEvents = (events: ExtractedEvent[]) =>
+    const active = (events: ExtractedEvent[]) =>
       events.filter(
         (event) =>
           event.startsAt < input.bounds.end && event.endsAt > input.now,
       );
-    let parsedEvents = parsedEventsFromPages(pages);
-    let activeEvents = filterActiveEvents(parsedEvents);
-    let alternateSearchResultCount = 0;
-    if (activeEvents.length === 0) {
-      const japaneseDate = new Intl.DateTimeFormat("ja-JP", {
-        timeZone: "Asia/Tokyo",
-        year: "numeric",
-        month: "long",
-        day: "numeric",
-      }).format(input.bounds.start);
-      const alternateQuery = [
-        japaneseDate,
-        "今日",
-        "開催イベント",
-        input.query === "イベント" ? "" : input.query,
-      ]
-        .filter(Boolean)
-        .join(" ");
-      const alternateResults = await executeSearch(
-        alternateQuery,
-        input.signal,
-        "",
-      );
-      const existingUrls = new Set(searchResults.map(canonicalSearchUrl));
-      const additionalResults = alternateResults.filter((result) => {
-        const canonicalUrl = canonicalSearchUrl(result);
-        if (!canonicalUrl || existingUrls.has(canonicalUrl)) return false;
-        existingUrls.add(canonicalUrl);
-        return true;
-      });
-      alternateSearchResultCount = additionalResults.length;
-      const alternatePages = selectDiverseSearchResults(
-        additionalResults,
-        MAX_ALTERNATE_EVENT_PAGES,
-      );
-      if (alternatePages.length > 0) {
-        selectedSearchResults = [...selectedSearchResults, ...alternatePages];
-        pages = [...pages, ...(await processSearchResults(alternatePages))];
-        parsedEvents = parsedEventsFromPages(pages);
-        activeEvents = filterActiveEvents(parsedEvents);
+    const parsed = active(crawler.events());
+    const events: DiscoveredEventInput[] = [];
+    for (const event of parsed) {
+      if (input.signal.aborted && !event.sourceCoordinates) {
+        onIssue("event_discovery_timeout");
+        continue;
       }
-    }
-    const extracted = activeEvents.slice(0, 20);
-    console.info("Event discovery extraction completed", {
-      selectedPageCount: selectedSearchResults.length,
-      alternateSearchResultCount,
-      fetchedPageCount: pages.filter((page) => page.status === "fulfilled")
-        .length,
-      failedPageCount: pages.filter((page) => page.status === "rejected")
-        .length,
-      parsedEventCount: parsedEvents.length,
-      activeEventCount: activeEvents.length,
-    });
-    if (searchResults.length === 0 && alternateSearchResultCount === 0) {
-      input.timings?.skip("eventPageFetch", "no_search_results");
-      input.timings?.skip("gsiGeocoding", "no_search_results");
-    }
-    if (extracted.length === 0) {
-      input.timings?.skip("gsiGeocoding", "no_extractable_events");
-    }
-    const geocoded: { event: ExtractedEvent; coordinates: Coordinates }[] = [];
-    for (const event of extracted) {
+      const detailedAddress = isDetailedAddress(event.address);
+      const specificVenue = isSpecificVenueName(event.location);
+      if (!detailedAddress && !(event.sourceCoordinates && specificVenue)) {
+        onIssue("venue_address_unverified");
+        continue;
+      }
       try {
-        geocoded.push({
-          event,
-          coordinates: await measureSearchTiming(
+        const coordinates =
+          event.sourceCoordinates ??
+          (await measureSearchTiming(
             input.timings,
             "gsiGeocoding",
             "venueAddressGeocoding",
             () => this.venueGeocoder.geocode(event.address, input.signal),
+          ));
+        events.push({
+          ...toDiscoveredEvent(
+            event,
+            coordinates,
+            null,
+            this.ollama.embeddingModel,
           ),
+          venueName: event.location,
+          venueVerified: true,
+          venueVerifiedAt: new Date(),
+          coordinateSource: event.sourceCoordinates
+            ? "source_page"
+            : "gsi_address",
+          coordinateSourceUrl: event.sourceCoordinates
+            ? (event.coordinateSourceUrl ?? event.sourceUrl)
+            : event.sourceUrl,
+          timePrecision: event.timePrecision,
+          hoursText: event.hoursText,
         });
-      } catch (error) {
-        input.degradedReasons.push("gsi_geocoding_failed");
-        console.warn("GSI venue geocoding failed", {
-          address: event.address,
-          error,
-        });
+      } catch {
+        onIssue(
+          input.signal.aborted
+            ? "event_discovery_timeout"
+            : "venue_coordinates_unverified",
+        );
       }
     }
-    const embeddings = await this.embedBestEffort(
-      geocoded.map(({ event }) => eventEmbeddingText(event)),
-      input.signal,
-      input.degradedReasons,
-    );
-    const events = geocoded.map(({ event, coordinates }, index) =>
-      toDiscoveredEvent(
-        event,
-        coordinates,
-        embeddings[index] ?? null,
-        this.ollama.embeddingModel,
-      ),
-    );
-    console.info("Event discovery geocoding completed", {
-      extractedEventCount: extracted.length,
-      geocodedEventCount: events.length,
+    console.info("Verified event discovery completed", {
+      searchResultCount: searchResults.length,
+      ...crawler.counts(),
+      verifiedEvents: events.length,
     });
+    if (!searchResults.length)
+      input.timings?.skip("eventPageFetch", "no_search_results");
+    if (!events.length)
+      input.timings?.skip("gsiGeocoding", "no_verified_events");
+    const unique = uniqueEvents(events);
     await this.store.setDiscoveryCache({
       cacheKey,
       query: normalizedQuery,
       area: input.area,
-      payload: events,
-      expiresAt: new Date(
-        Date.now() + (events.length > 0 ? this.cacheTtlMs : -1),
-      ),
+      payload: unique,
+      expiresAt: new Date(Date.now() + (unique.length ? this.cacheTtlMs : -1)),
     });
-    return { events, source: "live" as const };
+    return { events: unique, source: "live" as const };
   }
 
   private async backfillAndLoadMemories(userId: string, signal: AbortSignal) {
@@ -966,40 +876,10 @@ export class RoutingUnavailableError extends Error {}
 
 function canonicalSearchUrl(result: WebSearchResult) {
   try {
-    const url = new URL(result.url);
-    url.hash = "";
-    url.search = "";
-    return `${url.origin}${url.pathname.replace(/\/+$/u, "")}`;
+    return canonicalPageUrl(result.url);
   } catch {
     return "";
   }
-}
-
-async function mapSettledWithConcurrency<Input, Output>(
-  items: Input[],
-  concurrency: number,
-  task: (item: Input) => Promise<Output>,
-) {
-  const results: PromiseSettledResult<Output>[] = new Array(items.length);
-  let nextIndex = 0;
-  const workerCount = Math.min(Math.max(1, concurrency), items.length);
-  await Promise.all(
-    Array.from({ length: workerCount }, async () => {
-      while (nextIndex < items.length) {
-        const index = nextIndex;
-        nextIndex += 1;
-        try {
-          results[index] = {
-            status: "fulfilled",
-            value: await task(items[index]!),
-          };
-        } catch (reason) {
-          results[index] = { status: "rejected", reason };
-        }
-      }
-    }),
-  );
-  return results;
 }
 
 function selectDiverseSearchResults(results: WebSearchResult[], limit: number) {
@@ -1033,11 +913,10 @@ function toDiscoveredEvent(
   embedding: number[] | null,
   embeddingModel: string,
 ): DiscoveredEventInput {
-  const sourceFingerprint = createHash("sha256")
-    .update(
-      `${event.sourceUrl}\n${event.name}\n${event.startsAt.toISOString()}`,
-    )
-    .digest("hex");
+  const sourceFingerprint = eventIdentity({
+    ...event,
+    location: event.address,
+  });
   return {
     id: `evt_${sourceFingerprint.slice(0, 24)}`,
     name: event.name,
@@ -1111,16 +990,6 @@ function sanitizeTags(tags: string[]) {
         .filter((tag) => tag.length >= 1 && tag.length <= 30),
     ),
   ].slice(0, 8);
-}
-
-function deduplicateExtractedEvents(events: ExtractedEvent[]) {
-  const seen = new Set<string>();
-  return events.filter((event) => {
-    const key = `${event.sourceUrl}\n${event.name}\n${event.startsAt.toISOString()}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
 }
 
 function eventEmbeddingText(

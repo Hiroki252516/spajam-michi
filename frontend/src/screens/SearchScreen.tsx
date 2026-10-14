@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from "react";
 import {
   FlatList,
   ScrollView,
@@ -9,16 +9,23 @@ import {
   Pressable,
   ActivityIndicator,
   RefreshControl,
-} from 'react-native';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
-import * as Location from 'expo-location';
-import ScreenContainer from '../components/ScreenContainer';
-import EventCard, { type EventCardData } from '../components/EventCard';
-import CardComponent from '../components/CardComponent';
-import { COLORS, TYPOGRAPHY, SPACING, BORDER_RADIUS, SHADOWS } from '../constants/design';
-import { searchEvents } from '../services/api';
-import type { EventData, EventSearchResponse } from '../services/api';
-import { useAuth } from '../context/AuthContext';
+} from "react-native";
+import { MaterialCommunityIcons } from "@expo/vector-icons";
+import * as Location from "expo-location";
+import ScreenContainer from "../components/ScreenContainer";
+import EventCard, { type EventCardData } from "../components/EventCard";
+import CardComponent from "../components/CardComponent";
+import {
+  COLORS,
+  TYPOGRAPHY,
+  SPACING,
+  BORDER_RADIUS,
+  SHADOWS,
+} from "../constants/design";
+import { searchEvents } from "../services/api";
+import type { EventData, EventSearchResponse } from "../services/api";
+import { useAuth } from "../context/AuthContext";
+import { buildSearchArea } from "../services/locality";
 
 interface SearchScreenProps {
   onEventSelect: (event: EventData) => void;
@@ -28,8 +35,29 @@ interface SearchScreenProps {
 
 function emptySearchMessage(result: EventSearchResponse) {
   if (result.events.length > 0) return null;
-  if (result.meta.degradedReasons.includes('current_location_resolution_unavailable')) {
-    return '現在地の地域名を特定できず、近くのイベントを検索できませんでした。時間をおいて再検索してください。';
+  if (
+    result.meta.degradedReasons.includes(
+      "current_location_resolution_unavailable",
+    )
+  ) {
+    return "現在地の地域名を特定できず、近くのイベントを検索できませんでした。時間をおいて再検索してください。";
+  }
+  if (result.meta.degradedReasons.includes("no_reachable_events")) {
+    return "60分以内で移動し、開催時間内に到着できる候補がありませんでした。";
+  }
+  if (
+    result.meta.degradedReasons.some((reason) =>
+      /unavailable|timeout|blocked|invalid_response/u.test(reason),
+    )
+  ) {
+    return "イベント情報を取得・確認できませんでした。時間をおいて再検索してください。";
+  }
+  if (
+    result.meta.degradedReasons.some((reason) =>
+      /venue_.*unverified/u.test(reason),
+    )
+  ) {
+    return "具体的な会場を確認できる当日の候補がありませんでした。";
   }
   return null;
 }
@@ -43,46 +71,64 @@ const SearchScreen: React.FC<SearchScreenProps> = ({
   onOpenMyPage,
 }) => {
   const { isLoggedIn, user, token, completeTutorial } = useAuth();
-  const [activeTab, setActiveTab] = useState<'events' | 'guide'>(
-    user?.isFirstLogin ? 'guide' : 'events'
+  const [activeTab, setActiveTab] = useState<"events" | "guide">(
+    user?.isFirstLogin ? "guide" : "events",
   );
   const [events, setEvents] = useState<EventCardData[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [searchNotice, setSearchNotice] = useState<string | null>(null);
 
   useEffect(() => {
     if (user?.isFirstLogin) {
-      setActiveTab('guide');
+      setActiveTab("guide");
     }
   }, [user?.isFirstLogin]);
 
   const handleFinishTutorial = () => {
     completeTutorial();
-    setActiveTab('events');
+    setActiveTab("events");
   };
 
   const fetchCurrentEvents = useCallback(async () => {
-    if (!token) throw new Error('ログインしてからイベントを検索してください。');
+    if (!token) throw new Error("ログインしてからイベントを検索してください。");
 
     let permission = await Location.getForegroundPermissionsAsync();
     if (!permission.granted) {
       permission = await Location.requestForegroundPermissionsAsync();
     }
     if (!permission.granted) {
-      throw new Error('イベント検索には位置情報の許可が必要です。iPhoneの設定からExpo Goの位置情報を許可してください。');
+      throw new Error(
+        "イベント検索には位置情報の許可が必要です。iPhoneの設定からExpo Goの位置情報を許可してください。",
+      );
     }
     if (!(await Location.hasServicesEnabledAsync())) {
-      throw new Error('iPhoneの位置情報サービスを有効にしてください。');
+      throw new Error("iPhoneの位置情報サービスを有効にしてください。");
     }
 
     const position = await Location.getCurrentPositionAsync({
       accuracy: Location.Accuracy.Balanced,
     });
+    let area: string | null = null;
+    try {
+      const addresses = await Location.reverseGeocodeAsync(position.coords);
+      area =
+        addresses.map(buildSearchArea).find((value) => value !== null) ?? null;
+    } catch {
+      throw new Error(
+        "現在地の地域名を取得できませんでした。時間をおいて現在地から再検索してください。",
+      );
+    }
+    if (!area)
+      throw new Error(
+        "現在地の市区町村を確認できませんでした。現在地から再検索してください。",
+      );
     return searchEvents({
       token,
       latitude: position.coords.latitude,
       longitude: position.coords.longitude,
+      area,
     });
   }, [token]);
 
@@ -96,11 +142,22 @@ const SearchScreen: React.FC<SearchScreenProps> = ({
         if (isMounted) {
           setEvents(result.events);
           setLoadError(emptySearchMessage(result));
+          setSearchNotice(
+            result.meta.source === "database_fallback" &&
+              result.events.length > 0
+              ? "新しいイベント情報を取得できなかったため、24時間以内に確認した保存済みの候補を表示しています。"
+              : null,
+          );
         }
       } catch (error) {
         if (isMounted) {
           setEvents([]);
-          setLoadError(error instanceof Error ? error.message : 'イベントを検索できませんでした。');
+          setSearchNotice(null);
+          setLoadError(
+            error instanceof Error
+              ? error.message
+              : "イベントを検索できませんでした。",
+          );
         }
       } finally {
         if (isMounted) setIsLoading(false);
@@ -120,9 +177,19 @@ const SearchScreen: React.FC<SearchScreenProps> = ({
       const result = await fetchCurrentEvents();
       setEvents(result.events);
       setLoadError(emptySearchMessage(result));
+      setSearchNotice(
+        result.meta.source === "database_fallback" && result.events.length > 0
+          ? "新しいイベント情報を取得できなかったため、24時間以内に確認した保存済みの候補を表示しています。"
+          : null,
+      );
     } catch (error) {
       setEvents([]);
-      setLoadError(error instanceof Error ? error.message : 'イベントを検索できませんでした。');
+      setSearchNotice(null);
+      setLoadError(
+        error instanceof Error
+          ? error.message
+          : "イベントを検索できませんでした。",
+      );
     } finally {
       setIsRefreshing(false);
     }
@@ -135,41 +202,61 @@ const SearchScreen: React.FC<SearchScreenProps> = ({
   return (
     <>
       <StatusBar barStyle="dark-content" backgroundColor={COLORS.canvas} />
-      <ScreenContainer scrollable={false} keyboardAvoid={true} horizontalPadding={SPACING.base}>
+      <ScreenContainer
+        scrollable={false}
+        keyboardAvoid={true}
+        horizontalPadding={SPACING.base}
+      >
         {/* トッププロダクトナビゲーション + アカウントボタン (DESIGN.md top-nav) */}
         <View style={styles.headerRow}>
           <View style={styles.navBar}>
             {/* イベントタブ */}
             <Pressable
-              onPress={() => setActiveTab('events')}
-              style={[styles.tabItem, activeTab === 'events' && styles.tabItemActive]}
+              onPress={() => setActiveTab("events")}
+              style={[
+                styles.tabItem,
+                activeTab === "events" && styles.tabItemActive,
+              ]}
             >
               <MaterialCommunityIcons
                 name="calendar-multiselect"
                 size={22}
-                color={activeTab === 'events' ? COLORS.ink : COLORS.muted}
+                color={activeTab === "events" ? COLORS.ink : COLORS.muted}
               />
-              <Text style={[styles.tabLabel, activeTab === 'events' && styles.tabLabelActive]}>
+              <Text
+                style={[
+                  styles.tabLabel,
+                  activeTab === "events" && styles.tabLabelActive,
+                ]}
+              >
                 イベント
               </Text>
             </Pressable>
 
             {/* ガイド（チュートリアル）タブ */}
             <Pressable
-              onPress={() => setActiveTab('guide')}
-              style={[styles.tabItem, activeTab === 'guide' && styles.tabItemActive]}
+              onPress={() => setActiveTab("guide")}
+              style={[
+                styles.tabItem,
+                activeTab === "guide" && styles.tabItemActive,
+              ]}
             >
               <View style={styles.tabIconWrapper}>
                 <MaterialCommunityIcons
                   name="compass-outline"
                   size={22}
-                  color={activeTab === 'guide' ? COLORS.ink : COLORS.muted}
+                  color={activeTab === "guide" ? COLORS.ink : COLORS.muted}
                 />
                 <View style={styles.guideBadge}>
                   <Text style={styles.guideBadgeText}>使い方</Text>
                 </View>
               </View>
-              <Text style={[styles.tabLabel, activeTab === 'guide' && styles.tabLabelActive]}>
+              <Text
+                style={[
+                  styles.tabLabel,
+                  activeTab === "guide" && styles.tabLabelActive,
+                ]}
+              >
                 ガイド
               </Text>
             </Pressable>
@@ -181,30 +268,34 @@ const SearchScreen: React.FC<SearchScreenProps> = ({
             style={styles.accountButton}
           >
             <MaterialCommunityIcons
-              name={isLoggedIn ? 'account-circle' : 'account-circle-outline'}
+              name={isLoggedIn ? "account-circle" : "account-circle-outline"}
               size={24}
               color={isLoggedIn ? COLORS.primary : COLORS.ink}
             />
             {isLoggedIn && (
               <Text style={styles.accountButtonText} numberOfLines={1}>
-                {user?.name?.split(' ')[0] || 'マイページ'}
+                {user?.name?.split(" ")[0] || "マイページ"}
               </Text>
             )}
           </Pressable>
         </View>
 
         {/* タブに応じたメインコンテンツ切り替え */}
-        {activeTab === 'events' ? (
+        {activeTab === "events" ? (
           <>
             {/* 見出し */}
             <View style={styles.sectionHeader}>
               <Text style={styles.headline}>Where to go next?</Text>
               <Text style={styles.subheadline}>
-                条件に合う場所へ出発しよう！何が待っているかは到着後のお楽しみ ✨
+                条件に合う場所へ出発しよう！何が待っているかは到着後のお楽しみ
+                ✨
               </Text>
             </View>
 
             {/* イベント一覧 (DESIGN.md property-card) */}
+            {searchNotice && (
+              <Text style={styles.subheadline}>{searchNotice}</Text>
+            )}
             {isLoading ? (
               <View style={styles.loadingContainer}>
                 <ActivityIndicator size="large" color={COLORS.primary} />
@@ -239,9 +330,13 @@ const SearchScreen: React.FC<SearchScreenProps> = ({
                   color={COLORS.mutedSoft}
                 />
                 <Text style={styles.emptyStateTitle}>
-                  {loadError ? 'イベントを検索できませんでした' : '現在地周辺でイベントが見つかりませんでした'}
+                  {loadError
+                    ? "イベントを検索できませんでした"
+                    : "現在地周辺でイベントが見つかりませんでした"}
                 </Text>
-                {loadError && <Text style={styles.subheadline}>{loadError}</Text>}
+                {loadError && (
+                  <Text style={styles.subheadline}>{loadError}</Text>
+                )}
                 <Pressable onPress={handleRefresh} style={styles.retryButton}>
                   <Text style={styles.retryButtonText}>現在地から再検索</Text>
                 </Pressable>
@@ -262,7 +357,11 @@ const SearchScreen: React.FC<SearchScreenProps> = ({
             </View>
 
             {/* チュートリアルステップ 1 */}
-            <CardComponent blurred={true} padding={SPACING.md} style={styles.tutorialCard}>
+            <CardComponent
+              blurred={true}
+              padding={SPACING.md}
+              style={styles.tutorialCard}
+            >
               <View style={styles.stepHeader}>
                 <View style={styles.stepBadge}>
                   <Text style={styles.stepBadgeText}>STEP 1</Text>
@@ -270,7 +369,11 @@ const SearchScreen: React.FC<SearchScreenProps> = ({
                 <Text style={styles.stepTitle}>条件から行き先を選ぶ</Text>
               </View>
               <View style={styles.stepContent}>
-                <MaterialCommunityIcons name="map-search-outline" size={32} color={COLORS.primary} />
+                <MaterialCommunityIcons
+                  name="map-search-outline"
+                  size={32}
+                  color={COLORS.primary}
+                />
                 <Text style={styles.stepDescription}>
                   開催時間・所要時間・必要な金額・開催場所周辺の地図を確認して、気になる目的地のスポットを選択しましょう。
                 </Text>
@@ -278,7 +381,11 @@ const SearchScreen: React.FC<SearchScreenProps> = ({
             </CardComponent>
 
             {/* チュートリアルステップ 2 */}
-            <CardComponent blurred={true} padding={SPACING.md} style={styles.tutorialCard}>
+            <CardComponent
+              blurred={true}
+              padding={SPACING.md}
+              style={styles.tutorialCard}
+            >
               <View style={styles.stepHeader}>
                 <View style={styles.stepBadge}>
                   <Text style={styles.stepBadgeText}>STEP 2</Text>
@@ -286,7 +393,11 @@ const SearchScreen: React.FC<SearchScreenProps> = ({
                 <Text style={styles.stepTitle}>マップを見ながら出発</Text>
               </View>
               <View style={styles.stepContent}>
-                <MaterialCommunityIcons name="navigation-variant-outline" size={32} color={COLORS.primary} />
+                <MaterialCommunityIcons
+                  name="navigation-variant-outline"
+                  size={32}
+                  color={COLORS.primary}
+                />
                 <Text style={styles.stepDescription}>
                   目的地を決めたらナビ画面へ。リアルタイムGPSで目的地までの距離と方角を確認しながら移動します。
                 </Text>
@@ -294,7 +405,11 @@ const SearchScreen: React.FC<SearchScreenProps> = ({
             </CardComponent>
 
             {/* チュートリアルステップ 3 */}
-            <CardComponent blurred={true} padding={SPACING.md} style={styles.tutorialCard}>
+            <CardComponent
+              blurred={true}
+              padding={SPACING.md}
+              style={styles.tutorialCard}
+            >
               <View style={styles.stepHeader}>
                 <View style={styles.stepBadge}>
                   <Text style={styles.stepBadgeText}>STEP 3</Text>
@@ -302,15 +417,24 @@ const SearchScreen: React.FC<SearchScreenProps> = ({
                 <Text style={styles.stepTitle}>現地到着でイベント判明！</Text>
               </View>
               <View style={styles.stepContent}>
-                <MaterialCommunityIcons name="party-popper" size={32} color={COLORS.primary} />
+                <MaterialCommunityIcons
+                  name="party-popper"
+                  size={32}
+                  color={COLORS.primary}
+                />
                 <Text style={styles.stepDescription}>
-                  目的地まで100m以内に近づくとイベント情報がアンロック！現地で待っている最高の体験を楽しみましょう 🎉
+                  目的地まで100m以内に近づくとイベント情報がアンロック！現地で待っている最高の体験を楽しみましょう
+                  🎉
                 </Text>
               </View>
             </CardComponent>
 
             {/* チュートリアルステップ 4 */}
-            <CardComponent blurred={true} padding={SPACING.md} style={styles.tutorialCard}>
+            <CardComponent
+              blurred={true}
+              padding={SPACING.md}
+              style={styles.tutorialCard}
+            >
               <View style={styles.stepHeader}>
                 <View style={styles.stepBadge}>
                   <Text style={styles.stepBadgeText}>STEP 4</Text>
@@ -318,7 +442,11 @@ const SearchScreen: React.FC<SearchScreenProps> = ({
                 <Text style={styles.stepTitle}>参加＆満足度の記録</Text>
               </View>
               <View style={styles.stepContent}>
-                <MaterialCommunityIcons name="star-outline" size={32} color={COLORS.primary} />
+                <MaterialCommunityIcons
+                  name="star-outline"
+                  size={32}
+                  color={COLORS.primary}
+                />
                 <Text style={styles.stepDescription}>
                   イベント参加後は星評価で満足度を記録。記録された参加履歴はマイページに思い出として保存されます。
                 </Text>
@@ -330,8 +458,14 @@ const SearchScreen: React.FC<SearchScreenProps> = ({
               style={styles.startEventButton}
               onPress={handleFinishTutorial}
             >
-              <MaterialCommunityIcons name="rocket-launch-outline" size={20} color={COLORS.onPrimary} />
-              <Text style={styles.startEventText}>さっそくイベントを探してみる</Text>
+              <MaterialCommunityIcons
+                name="rocket-launch-outline"
+                size={20}
+                color={COLORS.onPrimary}
+              />
+              <Text style={styles.startEventText}>
+                さっそくイベントを探してみる
+              </Text>
             </Pressable>
           </ScrollView>
         )}
@@ -342,42 +476,42 @@ const SearchScreen: React.FC<SearchScreenProps> = ({
 
 const styles = StyleSheet.create({
   headerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
     paddingVertical: SPACING.xs,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.hairlineSoft,
   },
   navBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     gap: SPACING.lg,
   },
   tabItem: {
-    alignItems: 'center',
+    alignItems: "center",
     paddingBottom: SPACING.xs,
     borderBottomWidth: 2,
-    borderBottomColor: 'transparent',
+    borderBottomColor: "transparent",
   },
   tabItemActive: {
     borderBottomColor: COLORS.ink,
   },
   tabIconWrapper: {
-    position: 'relative',
+    position: "relative",
   },
   tabLabel: {
     fontSize: TYPOGRAPHY.navLink.fontSize,
-    fontWeight: '500',
+    fontWeight: "500",
     color: COLORS.muted,
     marginTop: 2,
   },
   tabLabelActive: {
-    fontWeight: '600',
+    fontWeight: "600",
     color: COLORS.ink,
   },
   guideBadge: {
-    position: 'absolute',
+    position: "absolute",
     top: -4,
     right: -20,
     backgroundColor: COLORS.canvas,
@@ -389,12 +523,12 @@ const styles = StyleSheet.create({
   },
   guideBadgeText: {
     fontSize: 9,
-    fontWeight: '700',
+    fontWeight: "700",
     color: COLORS.primary,
   },
   accountButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     gap: 4,
     paddingHorizontal: 10,
     paddingVertical: 6,
@@ -406,7 +540,7 @@ const styles = StyleSheet.create({
   },
   accountButtonText: {
     fontSize: TYPOGRAPHY.captionSm.fontSize,
-    fontWeight: '600',
+    fontWeight: "600",
     color: COLORS.ink,
     maxWidth: 70,
   },
@@ -430,14 +564,14 @@ const styles = StyleSheet.create({
   },
   loadingContainer: {
     flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
+    justifyContent: "center",
+    alignItems: "center",
     paddingVertical: SPACING.xxl,
   },
   emptyState: {
     flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
+    justifyContent: "center",
+    alignItems: "center",
     gap: SPACING.xs,
     paddingVertical: SPACING.xxl,
   },
@@ -456,7 +590,7 @@ const styles = StyleSheet.create({
   },
   retryButtonText: {
     color: COLORS.onPrimary,
-    fontWeight: '700',
+    fontWeight: "700",
   },
   /* チュートリアルガイド表示用スタイル */
   guideContainer: {
@@ -466,8 +600,8 @@ const styles = StyleSheet.create({
     marginBottom: SPACING.md,
   },
   stepHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     gap: SPACING.sm,
     marginBottom: SPACING.sm,
   },
@@ -479,17 +613,17 @@ const styles = StyleSheet.create({
   },
   stepBadgeText: {
     fontSize: 10,
-    fontWeight: '800',
+    fontWeight: "800",
     color: COLORS.onPrimary,
   },
   stepTitle: {
     fontSize: TYPOGRAPHY.titleSm.fontSize,
-    fontWeight: '700',
+    fontWeight: "700",
     color: COLORS.ink,
   },
   stepContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     gap: SPACING.md,
   },
   stepDescription: {
@@ -499,9 +633,9 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
   startEventButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
     gap: SPACING.xs,
     backgroundColor: COLORS.primary,
     paddingVertical: SPACING.md,
@@ -512,7 +646,7 @@ const styles = StyleSheet.create({
   },
   startEventText: {
     fontSize: TYPOGRAPHY.titleSm.fontSize,
-    fontWeight: '700',
+    fontWeight: "700",
     color: COLORS.onPrimary,
   },
 });

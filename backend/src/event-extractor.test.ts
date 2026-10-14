@@ -40,7 +40,7 @@ describe("event extraction", () => {
     assert.equal(events[0]?.address, "渋谷会場");
   });
 
-  it("keeps a date-only event as an all-day result without inventing times", async () => {
+  it("keeps date-only bounds for filtering without inventing opening times", async () => {
     const html = `<script type="application/ld+json">
       {"@type":"Event","name":"日付だけの展示会",
        "startDate":"2026-08-08","endDate":"2026-08-08",
@@ -53,6 +53,7 @@ describe("event extraction", () => {
     assert.equal(events.length, 1);
     assert.equal(events[0]?.startsAt.toISOString(), "2026-08-07T15:00:00.000Z");
     assert.equal(events[0]?.endsAt.toISOString(), "2026-08-08T14:59:59.999Z");
+    assert.equal(events[0]?.timePrecision, "date_only");
   });
 
   it("rejects an address invented by the local model", async () => {
@@ -135,5 +136,48 @@ describe("event extraction", () => {
     assert.equal(events.length, 1);
     assert.equal(events[0]?.location, "渋谷駅前広場");
     assert.equal(events[0]?.address, "渋谷駅前広場");
+    assert.equal(events[0]?.timePrecision, "date_only");
+    assert.equal(events[0]?.hoursText, null);
+  });
+
+  it("rejects model dates missing from the source and uses original body hours", async () => {
+    const modelEvent = {
+      name: "公開展示",
+      startDate: "2026-10-14T10:00:00+09:00",
+      endDate: "2026-10-14T18:00:00+09:00",
+      location: "横浜会場",
+      address: "神奈川県横浜市中区山下町193番地",
+      description: "説明",
+      imageUrl: "",
+      organizerName: "主催者",
+      organizerContactEmail: "",
+      tags: [],
+    };
+    const ollama = new OllamaClient(
+      "http://127.0.0.1:11434",
+      "gemma4:e2b",
+      "embeddinggemma:300m-qat-q4_0",
+      (async () =>
+        Response.json({
+          message: { content: JSON.stringify({ events: [modelEvent] }) },
+        })) as typeof fetch,
+    );
+    const body = "公開展示 横浜会場 神奈川県横浜市中区山下町193番地";
+    assert.deepEqual(
+      await extractEventsFromHtml({
+        sourceUrl: "https://events.example/1",
+        html: `<body>${body} 2026年10月15日開催</body>`,
+        ollama,
+      }),
+      [],
+    );
+    const events = await extractEventsFromHtml({
+      sourceUrl: "https://events.example/1",
+      html: `<body>${body} 2026年10月14日開催<p>開催時間：12:00〜15:30（最終入場15:00）</p></body>`,
+      ollama,
+    });
+    assert.equal(events.length, 1);
+    assert.equal(events[0]?.timePrecision, "date_only");
+    assert.equal(events[0]?.hoursText, "12:00〜15:30（最終入場15:00）");
   });
 });

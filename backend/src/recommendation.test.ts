@@ -14,6 +14,7 @@ import {
   formatTravelCost,
   formatTravelDuration,
   LocalLlmRecommendationService,
+  type RecommendationConfig,
   type RouteProvider,
 } from "./recommendation.js";
 import { SearchTimingCollector } from "./search-timing.js";
@@ -107,7 +108,6 @@ describe("local LLM recommendation service", () => {
         ollamaEmbeddingModel: "embeddinggemma:300m-qat-q4_0",
       },
       {
-        locationResolver: { resolve: async () => "東京都 渋谷区" },
         routes: {
           ...routeProvider(1_800, undefined, 300, "渋谷駅周辺"),
           resolveNearbyAreas: async (destinations) =>
@@ -121,6 +121,7 @@ describe("local LLM recommendation service", () => {
     const result = await service.search({
       userId: "user-1",
       query: "イベント",
+      area: "東京都渋谷区",
       latitude: 35.65,
       longitude: 139.69,
       limit: 10,
@@ -237,7 +238,6 @@ describe("local LLM recommendation service", () => {
         ollamaEmbeddingModel: "embeddinggemma:300m-qat-q4_0",
       },
       {
-        locationResolver: { resolve: async () => "東京都 渋谷区" },
         routes: routeProvider(
           3_500,
           (count) => {
@@ -252,6 +252,7 @@ describe("local LLM recommendation service", () => {
     const result = await service.search({
       userId: "user-1",
       query: "イベント",
+      area: "東京都渋谷区",
       latitude: 35.65,
       longitude: 139.69,
       limit: 10,
@@ -261,14 +262,29 @@ describe("local LLM recommendation service", () => {
     assert.deepEqual(result.events, []);
   });
 
-  it("falls back to today's database events when locality lookup fails", async () => {
+  it("uses only recently verified database candidates after search failure", async () => {
     const now = new Date();
-    const databaseEvent = toEventRow(
+    const good = toEventRow(
       discoveredEvent("evt-db", "DB内イベント", now, 35.66, 139.7),
     );
+    const old = {
+      ...good,
+      id: "old",
+      name: "古い候補",
+      venueVerifiedAt: new Date(now.getTime() - 25 * 3600000),
+    };
+    const unverified = { ...good, id: "unverified", venueVerified: false };
     const store = {
       listPreferenceMemories: async () => [],
-      listActiveEvents: async () => [databaseEvent],
+      getDiscoveryCache: async () => null,
+      setDiscoveryCache: async () => undefined,
+      listActiveEvents: async () => [
+        unverified,
+        old,
+        good,
+        { ...good, id: "duplicate", sourceUrl: "https://other.example/event" },
+      ],
+      upsertDiscoveredEvents: async () => [],
       setEventEmbedding: async () => undefined,
       findSimilarPreferenceMemories: async () => [],
       recordRecommendationLog: async () => undefined,
@@ -281,12 +297,12 @@ describe("local LLM recommendation service", () => {
         ollamaEmbeddingModel: "embeddinggemma:300m-qat-q4_0",
       },
       {
-        locationResolver: {
-          resolve: async () => {
-            throw new Error("DuckDuckGo unavailable");
+        routes: routeProvider(),
+        webSearch: {
+          search: async () => {
+            throw new Error("unavailable");
           },
         },
-        routes: routeProvider(),
         ollama: new OllamaClient(
           "http://127.0.0.1:11434",
           "gemma4:e2b",
@@ -298,40 +314,30 @@ describe("local LLM recommendation service", () => {
     const result = await service.search({
       userId: "user-1",
       query: "イベント",
+      area: "東京都渋谷区",
       latitude: 35.65,
       longitude: 139.69,
-      limit: 10,
+      limit: 20,
       offset: 0,
     });
     assert.equal(result.meta.source, "database_fallback");
-    assert.ok(
-      result.meta.degradedReasons.includes(
-        "current_location_resolution_unavailable",
-      ),
-    );
+    assert.ok(result.meta.degradedReasons.includes("event_search_unavailable"));
+    assert.equal(result.events.length, 1);
     assert.equal(result.events[0]?.id, "evt-db");
+    assert.ok(!result.events[0]?.spotName.includes("役所"));
   });
 
-  it("uses the nearby transit station when coordinate search cannot resolve a locality", async () => {
-    let localityResolverCalls = 0;
-    let nearbyLookupCoordinates:
-      { latitude: number; longitude: number } | undefined;
+  it("searches the supplied municipality without sending GPS coordinates", async () => {
+    const queries: string[] = [];
     let emptyCacheRevalidated = false;
-    let searchedQuery = "";
     const store = {
       listPreferenceMemories: async () => [],
-      getDiscoveryCache: async () => ({
-        payload: [],
-        expiresAt: new Date(Date.now() + 60_000),
-      }),
+      getDiscoveryCache: async () => ({ payload: [], expiresAt: new Date() }),
       setDiscoveryCache: async ({ expiresAt }: { expiresAt: Date }) => {
         emptyCacheRevalidated = expiresAt.getTime() <= Date.now();
       },
-      upsertDiscoveredEvents: async (events: DiscoveredEventInput[]) =>
-        events.map(toEventRow),
+      upsertDiscoveredEvents: async () => [],
       listActiveEvents: async () => [],
-      setEventEmbedding: async () => undefined,
-      findSimilarPreferenceMemories: async () => [],
       recordRecommendationLog: async () => undefined,
     } as unknown as EventStore;
     const service = new LocalLlmRecommendationService(
@@ -342,17 +348,16 @@ describe("local LLM recommendation service", () => {
         ollamaEmbeddingModel: "embeddinggemma:300m-qat-q4_0",
       },
       {
-        locationResolver: {
-          resolve: async () => {
-            localityResolverCalls += 1;
-            throw new Error("DuckDuckGo returned no location search results");
-          },
-        },
         routes: {
           ...routeProvider(),
-          resolveNearbyAreas: async (destinations) => {
-            nearbyLookupCoordinates = destinations[0];
-            return destinations.map(() => "渋谷駅周辺");
+          resolveNearbyAreas: async () => {
+            throw new Error("Origin locality must not use Transit");
+          },
+        },
+        webSearch: {
+          search: async (query) => {
+            queries.push(query);
+            return [];
           },
         },
         ollama: new OllamaClient(
@@ -361,39 +366,308 @@ describe("local LLM recommendation service", () => {
           "embeddinggemma:300m-qat-q4_0",
           ollamaFetchStub(),
         ),
-        webSearch: {
-          search: async (query) => {
-            searchedQuery = query;
-            return [];
-          },
-        },
       },
     );
-
     const result = await service.search({
       userId: "user-1",
       query: "イベント",
+      area: "東京都渋谷区",
       latitude: 35.6595,
       longitude: 139.7004,
       limit: 10,
       offset: 0,
     });
-
-    assert.equal(localityResolverCalls, 0);
-    assert.deepEqual(nearbyLookupCoordinates, {
-      latitude: 35.6595,
-      longitude: 139.7004,
-    });
-    assert.match(searchedQuery, /渋谷駅周辺/u);
-    assert.equal(emptyCacheRevalidated, true);
-    assert.equal(result.meta.currentLocationProvider, "transit_api");
+    assert.ok(queries.length >= 2);
     assert.ok(
-      !result.meta.degradedReasons.includes(
-        "current_location_resolution_unavailable",
+      queries.every(
+        (query) =>
+          query.startsWith("東京都渋谷区") &&
+          !query.includes("35.6595") &&
+          !query.includes("139.7004"),
       ),
     );
+    assert.equal(emptyCacheRevalidated, true);
+    assert.equal(result.meta.currentLocationProvider, "device_geocoder");
+  });
+
+  it("broadens search before crawling and prioritizes supported event details", async () => {
+    const queries: string[] = [];
+    const fetched: string[] = [];
+    const walker = "https://www.walkerplus.com/event/ar0314e123456/";
+    const service = testService(
+      {},
+      {
+        webSearch: {
+          search: async (query) => {
+            queries.push(query);
+            return [
+              {
+                title: "イベント",
+                snippet: "",
+                url:
+                  queries.length === 1
+                    ? "https://city.example/event/1"
+                    : walker,
+              },
+            ];
+          },
+        },
+        pageFetcher: async (url) => {
+          assert.equal(queries.length, 2);
+          fetched.push(url);
+          return { url, html: verifiedEventHtml() };
+        },
+        venueGeocoder: {
+          geocode: async () => {
+            throw new Error("Explicit source coordinates must be preferred");
+          },
+        },
+      },
+    );
+    const result = await service.search(searchInput());
+    assert.equal(fetched[0], walker);
+    assert.ok(fetched.includes(`${walker}map.html`));
+    assert.ok(queries[1]?.includes("今日 開催イベント"));
+    assert.equal(result.total, 1);
+    assert.equal(result.meta.source, "live");
+    assert.equal(result.events[0]?.coordinateSource, "source_page");
+  });
+
+  it("retains confirmed candidates when discovery times out and reserves time for routes", async () => {
+    let routingWasAvailable = false;
+    const service = testService(
+      {},
+      {
+        webSearch: {
+          search: async () => [
+            {
+              title: "展示",
+              snippet: "",
+              url: "https://www.walkerplus.com/event/ar0314e123456/",
+            },
+          ],
+        },
+        pageFetcher: async (url, options) => {
+          if (url.endsWith("map.html")) {
+            await new Promise((resolve) => setTimeout(resolve, 90));
+            options?.signal?.throwIfAborted();
+          }
+          return { url, html: verifiedEventHtml() };
+        },
+        routes: {
+          computeRoutes: async (_origin, destinations, _departure, signal) => {
+            routingWasAvailable = !signal?.aborted;
+            return destinations.map((_, destinationIndex) => ({
+              destinationIndex,
+              travelMode: "WALK",
+              durationSeconds: 600,
+              distanceMeters: 700,
+              fare: null,
+            }));
+          },
+        },
+      },
+      { searchTimeoutMs: 120 },
+    );
+    const result = await service.search(searchInput());
+    assert.equal(result.total, 1);
+    assert.equal(routingWasAvailable, true);
+    assert.ok(result.meta.degradedReasons.includes("event_discovery_timeout"));
+  });
+
+  it("rejects an administrative area marker or a floor-only venue", async () => {
+    for (const venueName of ["横浜市中区周辺", "8階 催会場"]) {
+      const service = testService(
+        {},
+        {
+          webSearch: {
+            search: async () => [
+              {
+                title: "展示",
+                snippet: "",
+                url: "https://events.example/event/1",
+              },
+            ],
+          },
+          pageFetcher: async (url) => ({
+            url,
+            html: verifiedEventHtml()
+              .replace("展示会場", venueName)
+              .replace("神奈川県横浜市中区山下町193番地", "神奈川県横浜市中区"),
+          }),
+        },
+      );
+      const result = await service.search(searchInput());
+      assert.equal(result.total, 0);
+      assert.ok(
+        result.meta.degradedReasons.includes("venue_address_unverified"),
+      );
+    }
+  });
+
+  it("validates freshly confirmed venues against the current time after a slow discovery", async (t) => {
+    const now = new Date("2026-10-14T14:00:00+09:00");
+    t.mock.timers.enable({ apis: ["Date"], now });
+    let advanced = false;
+    const service = testService(
+      {},
+      {
+        webSearch: {
+          search: async () => [
+            {
+              title: "展示",
+              snippet: "",
+              url: "https://events.example/event/1",
+            },
+          ],
+        },
+        pageFetcher: async (url) => {
+          if (!advanced) {
+            t.mock.timers.tick(65000);
+            advanced = true;
+          }
+          return { url, html: verifiedEventHtml() };
+        },
+      },
+    );
+    const result = await service.search(searchInput());
+    assert.equal(result.total, 1);
+    assert.equal(
+      result.events[0]?.venueVerifiedAt?.getTime(),
+      now.getTime() + 65000,
+    );
+  });
+
+  it("excludes arrival after today's confirmed closing while keeping unknown schedules explicit", async (t) => {
+    const now = new Date("2026-10-14T14:00:00+09:00");
+    t.mock.timers.enable({ apis: ["Date"], now });
+    const base = {
+      ...discoveredEvent("closing", "終了前", now, 35.66, 139.7),
+      timePrecision: "date_only" as const,
+      startsAt: new Date("2026-10-01T00:00:00+09:00"),
+      endsAt: new Date("2026-10-31T23:59:59+09:00"),
+    };
+    const service = testService({
+      getDiscoveryCache: async () => ({
+        expiresAt: new Date(now.getTime() + 60000),
+        payload: [
+          {
+            ...base,
+            id: "late",
+            name: "到着時に終了",
+            hoursText: "10:00〜14:20",
+          },
+          { ...base, id: "open", name: "到着可能", hoursText: "10:00〜14:40" },
+          { ...base, id: "unknown", name: "時間未確認", hoursText: null },
+        ],
+      }),
+    });
+    const result = await service.search(searchInput());
+    assert.deepEqual(
+      new Set(result.events.map((event) => event.id)),
+      new Set(["open", "unknown"]),
+    );
+    assert.equal(
+      result.events.find((event) => event.id === "unknown")?.hoursText,
+      null,
+    );
+  });
+
+  it("includes discovery elapsed time when checking arrival before closing", async (t) => {
+    const now = new Date("2026-10-14T14:00:00+09:00");
+    t.mock.timers.enable({ apis: ["Date"], now });
+    const event = {
+      ...discoveredEvent("last-minute", "閉場間近", now, 35.66, 139.7),
+      hoursText: "10:00〜14:20",
+    };
+    let departedAt: Date | undefined;
+    const service = testService(
+      {
+        getDiscoveryCache: async () => {
+          t.mock.timers.tick(75000);
+          return {
+            payload: [event],
+            expiresAt: new Date(now.getTime() + 900000),
+          };
+        },
+      },
+      {
+        routes: {
+          computeRoutes: async (origin, destinations, departure, signal) => {
+            departedAt = departure;
+            return routeProvider(1170).computeRoutes(
+              origin,
+              destinations,
+              departure,
+              signal,
+            );
+          },
+        },
+      },
+    );
+    const result = await service.search(searchInput());
+    assert.equal(departedAt?.getTime(), now.getTime() + 75000);
+    assert.equal(result.total, 0);
+    assert.ok(result.meta.degradedReasons.includes("no_reachable_events"));
   });
 });
+
+function searchInput() {
+  return {
+    userId: "user-1",
+    query: "イベント",
+    area: "神奈川県横浜市",
+    latitude: 35.4658,
+    longitude: 139.6223,
+    limit: 20,
+    offset: 0,
+  };
+}
+
+function verifiedEventHtml() {
+  return `<script type="application/ld+json">${JSON.stringify({ "@type": "Event", name: "出典の展示", startDate: "2026-01-01", endDate: "2099-12-31", location: { name: "展示会場", address: "神奈川県横浜市中区山下町193番地", geo: { latitude: 35.4437, longitude: 139.638 } } })}</script>`;
+}
+
+function testService(
+  overrides: Partial<EventStore>,
+  dependencies: ConstructorParameters<
+    typeof LocalLlmRecommendationService
+  >[2] = {},
+  config: Partial<RecommendationConfig> = {},
+) {
+  const store = {
+    listPreferenceMemories: async () => [],
+    getDiscoveryCache: async () => null,
+    setDiscoveryCache: async () => {},
+    upsertDiscoveredEvents: async (events: DiscoveredEventInput[]) =>
+      events.map(toEventRow),
+    listActiveEvents: async () => [],
+    setEventEmbedding: async () => {},
+    findSimilarPreferenceMemories: async () => [],
+    recordRecommendationLog: async () => {},
+    ...overrides,
+  } as EventStore;
+  return new LocalLlmRecommendationService(
+    store,
+    {
+      ollamaBaseUrl: "http://127.0.0.1:11434",
+      ollamaChatModel: "gemma4:e2b",
+      ollamaEmbeddingModel: "embeddinggemma:300m-qat-q4_0",
+      ...config,
+    },
+    {
+      routes: routeProvider(),
+      webSearch: { search: async () => [] },
+      ollama: new OllamaClient(
+        "http://127.0.0.1:11434",
+        "gemma4:e2b",
+        "embeddinggemma:300m-qat-q4_0",
+        ollamaFetchStub(),
+      ),
+      ...dependencies,
+    },
+  );
+}
 
 function discoveredEvent(
   id: string,
@@ -405,7 +679,12 @@ function discoveredEvent(
   return {
     id,
     name,
-    location: "東京都渋谷区",
+    location: "東京都渋谷区神南1-1-1",
+    venueName: "渋谷会場",
+    venueVerified: true,
+    venueVerifiedAt: now,
+    coordinateSource: "gsi_address",
+    timePrecision: "datetime",
     imageUri: null,
     description: `${name}の説明`,
     detailedDescription: `${name}の詳細`,
@@ -427,6 +706,7 @@ function discoveredEvent(
 
 function toEventRow(event: DiscoveredEventInput): EventRow {
   return {
+    ...event,
     id: event.id,
     name: event.name,
     spotName: event.spotName ?? null,
