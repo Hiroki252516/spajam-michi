@@ -224,7 +224,7 @@ describe("frontend API", () => {
             generatedAt: "2026-08-08T00:00:00.000Z",
             routingProvider: "transit_api" as const,
             geocodingProvider: "gsi" as const,
-            currentLocationProvider: "duckduckgo" as const,
+            currentLocationProvider: "device_geocoder" as const,
             degradedReasons: [],
             travelAdvisory: "Transit APIによる所要時間です。",
           },
@@ -255,7 +255,7 @@ describe("frontend API", () => {
   it("searches events with pagination", async () => {
     const token = await registerAndGetToken();
     const response = await app.request(
-      "/api/events/search?q=React%20Native&latitude=35.6595&longitude=139.7004&limit=10&offset=0",
+      "/api/events/search?area=東京都渋谷区&q=React%20Native&latitude=35.6595&longitude=139.7004&limit=10&offset=0",
       { headers: { Authorization: `Bearer ${token}` } },
     );
     assert.equal(response.status, 202);
@@ -299,7 +299,7 @@ describe("frontend API", () => {
 
   it("requires authentication before calling recommendation dependencies", async () => {
     const response = await app.request(
-      "/api/events/search?latitude=35.6595&longitude=139.7004&debug=timings",
+      "/api/events/search?area=東京都渋谷区&latitude=35.6595&longitude=139.7004&debug=timings",
     );
     assert.equal(response.status, 401);
     const body = (await response.json()) as {
@@ -312,7 +312,7 @@ describe("frontend API", () => {
 
   it("rejects invalid and expired search sessions before dependencies", async () => {
     const invalid = await app.request(
-      "/api/events/search?latitude=35.6595&longitude=139.7004",
+      "/api/events/search?area=東京都渋谷区&latitude=35.6595&longitude=139.7004",
       { headers: { Authorization: "Bearer invalid-token" } },
     );
     assert.equal(invalid.status, 401);
@@ -324,7 +324,7 @@ describe("frontend API", () => {
     assert.ok(session);
     session.expiresAt = new Date(0);
     const expired = await app.request(
-      "/api/events/search?latitude=35.6595&longitude=139.7004",
+      "/api/events/search?area=東京都渋谷区&latitude=35.6595&longitude=139.7004",
       { headers: { Authorization: `Bearer ${token}` } },
     );
     assert.equal(expired.status, 401);
@@ -348,10 +348,27 @@ describe("frontend API", () => {
     assert.equal(recommendationSearchCount, 0);
   });
 
+  it("requires a municipality and rejects landmark/address input before creating a job", async () => {
+    const token = await registerAndGetToken();
+    for (const area of [
+      "",
+      "中区役所周辺",
+      "神奈川県横浜市中区山下町193",
+      "https://example.com",
+    ]) {
+      const response = await app.request(
+        `/api/events/search?latitude=35.6595&longitude=139.7004&area=${encodeURIComponent(area)}`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      assert.equal(response.status, 400);
+      assert.equal((await response.json()).error.code, "AREA_REQUIRED");
+    }
+  });
+
   it("rejects disabled and invalid timing debug requests before creating a job", async () => {
     const token = await registerAndGetToken();
     const disabled = await app.request(
-      "/api/events/search?latitude=35.6595&longitude=139.7004&debug=timings",
+      "/api/events/search?area=東京都渋谷区&latitude=35.6595&longitude=139.7004&debug=timings",
       { headers: { Authorization: `Bearer ${token}` } },
     );
     assert.equal(disabled.status, 403);
@@ -366,7 +383,7 @@ describe("frontend API", () => {
       enableSearchTimingDebug: true,
     });
     const invalid = await debugApp.request(
-      "/api/events/search?latitude=35.6595&longitude=139.7004&debug=verbose",
+      "/api/events/search?area=東京都渋谷区&latitude=35.6595&longitude=139.7004&debug=verbose",
       { headers: { Authorization: `Bearer ${token}` } },
     );
     assert.equal(invalid.status, 400);
@@ -386,7 +403,7 @@ describe("frontend API", () => {
       enableSearchTimingDebug: true,
     });
     const response = await debugApp.request(
-      "/api/events/search?latitude=35.6595&longitude=139.7004&debug=timings",
+      "/api/events/search?area=東京都渋谷区&latitude=35.6595&longitude=139.7004&debug=timings",
       { headers: { Authorization: `Bearer ${token}` } },
     );
     assert.equal(response.status, 202);
@@ -432,7 +449,7 @@ describe("frontend API", () => {
       enableSearchTimingDebug: true,
     });
     const response = await debugApp.request(
-      "/api/events/search?latitude=35.6595&longitude=139.7004&debug=timings",
+      "/api/events/search?area=東京都渋谷区&latitude=35.6595&longitude=139.7004&debug=timings",
       { headers: { Authorization: `Bearer ${token}` } },
     );
     const accepted = (await response.json()) as { data: { jobId: string } };
@@ -458,7 +475,7 @@ describe("frontend API", () => {
       throw new RoutingUnavailableError("Transit API unavailable");
     };
     const response = await app.request(
-      "/api/events/search?latitude=35.6595&longitude=139.7004",
+      "/api/events/search?area=東京都渋谷区&latitude=35.6595&longitude=139.7004",
       { headers: { Authorization: `Bearer ${token}` } },
     );
     assert.equal(response.status, 202);

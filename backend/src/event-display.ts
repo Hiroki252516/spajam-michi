@@ -12,7 +12,14 @@ export function fallbackSpotName(location: string) {
   return areaNameFromAddress(location) ?? "周辺エリア情報なし";
 }
 
-export function formatEventTime(startsAt: Date, endsAt: Date) {
+export function formatEventTime(
+  startsAt: Date,
+  endsAt: Date,
+  precision?: "date_only" | "datetime" | null,
+  hoursText?: string | null,
+) {
+  if (hoursText?.trim()) return hoursText.trim();
+  if (precision === "date_only") return "時間未確認";
   const dateFormatter = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Tokyo",
     year: "numeric",
@@ -28,11 +35,19 @@ export function formatEventTime(startsAt: Date, endsAt: Date) {
   const startTime = timeFormatter.format(startsAt);
   const endTime = timeFormatter.format(endsAt);
   if (
-    dateFormatter.format(startsAt) === dateFormatter.format(endsAt) &&
+    precision !== "datetime" &&
     startTime === "00:00" &&
     endTime === "23:59"
   ) {
-    return "時間未定";
+    return "時間未確認";
+  }
+  if (dateFormatter.format(startsAt) !== dateFormatter.format(endsAt)) {
+    const formatter = new Intl.DateTimeFormat("ja-JP", {
+      timeZone: "Asia/Tokyo",
+      month: "numeric",
+      day: "numeric",
+    });
+    return `${formatter.format(startsAt)} ${startTime}〜${formatter.format(endsAt)} ${endTime}`;
   }
   return `${startTime}-${endTime}`;
 }

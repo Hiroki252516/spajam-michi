@@ -31,3 +31,54 @@ describe("DuckDuckGo HTML adapter", () => {
     ]);
   });
 });
+
+it("distinguishes legitimate empty results from blocked and malformed pages", async () => {
+  let calls = 0;
+  const empty = new DuckDuckGoHtmlSearchProvider(
+    (async () => {
+      calls += 1;
+      return new Response('<div class="no-results">No results found</div>');
+    }) as typeof fetch,
+    async () => {},
+  );
+  assert.deepEqual(await empty.search("横浜 イベント", 8), []);
+  assert.equal(calls, 1);
+  for (const html of [
+    '<form id="challenge-form">Please complete the following challenge</form>',
+    "<html><body>Unexpected content</body></html>",
+  ]) {
+    calls = 0;
+    const issues: string[] = [];
+    const provider = new DuckDuckGoHtmlSearchProvider(
+      (async () => {
+        calls += 1;
+        return new Response(html);
+      }) as typeof fetch,
+      async () => {},
+    );
+    await assert.rejects(
+      provider.search("横浜 イベント", 8, undefined, (reason) =>
+        issues.push(reason),
+      ),
+    );
+    assert.equal(calls, 2);
+    assert.equal(issues.length, 2);
+  }
+});
+
+it("retries once and recovers a parseable result", async () => {
+  let calls = 0;
+  const provider = new DuckDuckGoHtmlSearchProvider(
+    (async () => {
+      calls += 1;
+      return calls === 1
+        ? new Response("busy", { status: 503 })
+        : new Response(
+            '<div class="result"><a class="result__a" href="https://events.example/1">展示</a></div>',
+          );
+    }) as typeof fetch,
+    async () => {},
+  );
+  assert.equal((await provider.search("横浜 イベント", 8)).length, 1);
+  assert.equal(calls, 2);
+});

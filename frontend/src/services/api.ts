@@ -1,4 +1,4 @@
-import { API_BASE_URL, apiRequest } from './apiClient';
+import { API_BASE_URL, apiRequest } from "./apiClient";
 
 export interface EventData {
   id: string;
@@ -19,7 +19,7 @@ export interface EventData {
     longitude: number;
   };
   sourceUrl?: string | null;
-  travelMode?: 'TRANSIT' | 'WALK';
+  travelMode?: "TRANSIT" | "WALK";
   travelDurationMinutes?: number;
   recommendationReason?: string;
 }
@@ -32,7 +32,7 @@ export interface RevealedEvent {
 }
 
 export interface EventSearchMetadata {
-  source: 'live' | 'cache' | 'database_fallback';
+  source: "live" | "cache" | "database_fallback";
   degradedReasons: string[];
 }
 
@@ -43,13 +43,13 @@ export interface EventSearchResponse {
 
 interface SearchAccepted {
   jobId: string;
-  status: 'queued';
+  status: "queued";
   pollUrl: string;
 }
 
 interface SearchJob {
   jobId: string;
-  status: 'queued' | 'running' | 'succeeded' | 'failed';
+  status: "queued" | "running" | "succeeded" | "failed";
   events?: EventData[];
   meta?: EventSearchMetadata;
   error?: { code?: string; message?: string };
@@ -78,6 +78,7 @@ export async function searchEvents(input: {
   token: string;
   latitude: number;
   longitude: number;
+  area: string;
   query?: string;
   limit?: number;
   offset?: number;
@@ -85,7 +86,8 @@ export async function searchEvents(input: {
   const params = new URLSearchParams({
     latitude: String(input.latitude),
     longitude: String(input.longitude),
-    q: input.query?.trim() || 'イベント',
+    area: input.area,
+    q: input.query?.trim() || "イベント",
     limit: String(input.limit ?? 20),
     offset: String(input.offset ?? 0),
   });
@@ -101,18 +103,20 @@ export async function searchEvents(input: {
       headers: { Authorization: `Bearer ${input.token}` },
     });
 
-    if (job.status === 'succeeded') {
+    if (job.status === "succeeded") {
       return {
         events: job.events ?? [],
-        meta: job.meta ?? { source: 'database_fallback', degradedReasons: [] },
+        meta: job.meta ?? { source: "database_fallback", degradedReasons: [] },
       };
     }
-    if (job.status === 'failed') {
-      throw new Error(job.error?.message ?? 'イベント検索に失敗しました。');
+    if (job.status === "failed") {
+      throw new Error(job.error?.message ?? "イベント検索に失敗しました。");
     }
   }
 
-  throw new Error('イベント検索に時間がかかっています。少し待ってから再検索してください。');
+  throw new Error(
+    "イベント検索に時間がかかっています。少し待ってから再検索してください。",
+  );
 }
 
 /**
@@ -126,10 +130,10 @@ export function revealEvent(
   return apiRequest<RevealedEvent>(
     `/api/events/${encodeURIComponent(eventId)}/reveal`,
     {
-      method: 'POST',
+      method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
+        "Content-Type": "application/json",
       },
       body: JSON.stringify(coordinates),
     },
@@ -145,11 +149,11 @@ export function submitReview(
   userId: string,
   token: string,
 ): Promise<ReviewResponse> {
-  return apiRequest<ReviewResponse>('/api/reviews', {
-    method: 'POST',
+  return apiRequest<ReviewResponse>("/api/reviews", {
+    method: "POST",
     headers: {
       Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
+      "Content-Type": "application/json",
     },
     body: JSON.stringify({ eventId, rating, userId }),
   });
@@ -157,7 +161,9 @@ export function submitReview(
 
 export async function checkHealth(): Promise<boolean> {
   try {
-    const response = await fetch(new URL('/health', `${API_BASE_URL}/`).toString());
+    const response = await fetch(
+      new URL("/health", `${API_BASE_URL}/`).toString(),
+    );
     return response.ok;
   } catch {
     return false;

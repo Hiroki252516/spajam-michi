@@ -2,6 +2,8 @@ import { load } from "cheerio";
 import { z } from "zod";
 
 import { OllamaClient } from "./ollama.js";
+import { validVenueCoordinates } from "./event-quality.js";
+import type { Coordinates } from "./geocoding.js";
 import {
   measureSearchTiming,
   type SearchTimingCollector,
@@ -20,6 +22,10 @@ export type ExtractedEvent = {
   tags: string[];
   sourceUrl: string;
   contentText: string;
+  timePrecision: "date_only" | "datetime";
+  hoursText: string | null;
+  sourceCoordinates?: Coordinates;
+  coordinateSourceUrl?: string;
 };
 
 const llmEventSchema = z.object({
@@ -102,6 +108,18 @@ export async function extractEventsFromHtml(input: {
     document.jsonLdValues,
     document.contentText,
   );
+  if (deterministic.length === 1) {
+    deterministic[0]!.hoursText = sourceHours(input.html);
+    const marker = sourceMapMarker(input.sourceUrl, input.html);
+    if (marker) {
+      deterministic[0]!.sourceCoordinates = marker;
+      deterministic[0]!.coordinateSourceUrl = input.sourceUrl;
+      deterministic[0]!.sourceUrl = input.sourceUrl.replace(
+        /\/map\.html(?:\?.*)?$/u,
+        "/",
+      );
+    }
+  }
   if (deterministic.length > 0 || !input.ollama) {
     if (deterministic.length === 0) {
       console.info("Event page has no verified JSON-LD event", {
@@ -160,7 +178,9 @@ export async function extractEventsFromHtml(input: {
     }
     if (
       !parseDateTime(event.startDate, "start") ||
-      !parseDateTime(event.endDate, "end")
+      !parseDateTime(event.endDate, "end") ||
+      !sourceContainsDate(sourceText, event.startDate) ||
+      !sourceContainsDate(sourceText, event.endDate)
     ) {
       invalidDateCount += 1;
       continue;
@@ -168,8 +188,9 @@ export async function extractEventsFromHtml(input: {
     const verifiedLocation = sourceBackedLocation ? location : address;
     const normalized = normalizeEvent({
       name,
-      startDate: event.startDate,
-      endDate: event.endDate,
+      // A model may normalize dates, but must not manufacture opening hours.
+      startDate: sourceBackedDateTime(event.startDate, sourceText),
+      endDate: sourceBackedDateTime(event.endDate, sourceText),
       location: verifiedLocation,
       address: sourceBackedAddress ? address : verifiedLocation,
       description: event.description,
@@ -186,6 +207,7 @@ export async function extractEventsFromHtml(input: {
     }
     accepted.push(...normalized);
   }
+  if (accepted.length === 1) accepted[0]!.hoursText = sourceHours(input.html);
   if (accepted.length === 0) {
     console.info("Event page has no verified LLM event", {
       ...pageSignals,
@@ -244,7 +266,7 @@ function extractJsonLdEvents(
       const location = asObject(value.location);
       const address =
         postalAddress(location?.address) || stringValue(location?.name);
-      return normalizeEvent({
+      const events = normalizeEvent({
         name: stringValue(value.name),
         startDate: stringValue(value.startDate),
         endDate: stringValue(value.endDate),
@@ -260,6 +282,20 @@ function extractJsonLdEvents(
         sourceUrl,
         contentText,
       });
+      const geo = asObject(location?.geo);
+      const latitude = Number(geo?.latitude);
+      const longitude = Number(geo?.longitude);
+      if (
+        geo &&
+        validVenueCoordinates(latitude, longitude) &&
+        stringValue(location?.name)
+      ) {
+        for (const event of events) {
+          event.sourceCoordinates = { latitude, longitude };
+          event.coordinateSourceUrl = sourceUrl;
+        }
+      }
+      return events;
     });
 }
 
@@ -305,6 +341,12 @@ function normalizeEvent(input: {
       ].slice(0, 20),
       sourceUrl: input.sourceUrl,
       contentText: input.contentText,
+      timePrecision:
+        /[T\s]\d{1,2}:\d{2}/u.test(input.startDate) &&
+        /[T\s]\d{1,2}:\d{2}/u.test(input.endDate)
+          ? "datetime"
+          : "date_only",
+      hoursText: null,
     },
   ];
 }
@@ -413,12 +455,95 @@ function postalAddress(value: unknown) {
   if (typeof value === "string") return value.trim();
   const object = asObject(value);
   if (!object) return "";
+  const street = stringValue(object.streetAddress).trim();
+  if (/^(?:北海道|東京都|大阪府|京都府|[一-龯]{2,3}県)/u.test(street))
+    return street;
+  const locality = stringValue(object.addressLocality).trim();
+  const region = stringValue(object.addressRegion).trim();
   return [
-    stringValue(object.addressRegion),
-    stringValue(object.addressLocality),
-    stringValue(object.streetAddress),
+    locality.startsWith(region) ? "" : region,
+    street.startsWith(locality) ? "" : locality,
+    street,
   ]
     .filter(Boolean)
     .join("")
     .trim();
+}
+
+function sourceHours(html: string) {
+  const $ = load(html);
+  let hours = "";
+  $("dt, th, span").each((_, el) => {
+    if (hours || $(el).text().trim() !== "開催時間") return;
+    const next =
+      $(el).next().text().trim() || $(el).parent().next().text().trim();
+    if (next && next.length <= 300 && /\d{1,2}:\d{2}/u.test(next)) hours = next;
+  });
+  if (!hours) {
+    $("p, dd, td").each((_, el) => {
+      if (hours) return;
+      const text = $(el).text().trim();
+      const match = /(?:開催時間|開演時間|営業時間)\s*[:：]\s*(.+)/u.exec(text);
+      if (match && match[1]!.length <= 300 && /\d{1,2}:\d{2}/u.test(match[1]!))
+        hours = match[1]!;
+    });
+  }
+  return hours.replace(/\s+/gu, " ").trim() || null;
+}
+
+function sourceContainsDate(source: string, value: string) {
+  const date = /^(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})/u.exec(value.trim());
+  if (!date) return false;
+  const year = date[1]!;
+  const month = Number(date[2]);
+  const day = Number(date[3]);
+  const fullDate = new RegExp(
+    `${year}\\s*(?:年|[-/.])\\s*0?${month}\\s*(?:月|[-/.])\\s*0?${day}(?!\\d)`,
+    "u",
+  );
+  const partialDate = new RegExp(
+    `(?<!\\d)0?${month}\\s*月\\s*0?${day}\\s*日`,
+    "u",
+  );
+  return (
+    fullDate.test(source) || (source.includes(year) && partialDate.test(source))
+  );
+}
+
+function sourceBackedDateTime(value: string, source: string) {
+  if (source.includes(value)) return value;
+  const date = /^(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})/u.exec(value.trim())!;
+  return `${date[1]}-${date[2]!.padStart(2, "0")}-${date[3]!.padStart(2, "0")}`;
+}
+
+function sourceMapMarker(sourceUrl: string, html: string): Coordinates | null {
+  const source = new URL(sourceUrl);
+  if (
+    source.hostname !== "www.walkerplus.com" ||
+    !/^\/event\/ar\d+e\d+\/map\.html$/u.test(source.pathname)
+  )
+    return null;
+  const $ = load(html);
+  for (const frame of $("iframe[src]").toArray()) {
+    try {
+      const url = new URL($(frame).attr("src")!);
+      if (
+        url.hostname !== "www.google.com" ||
+        url.pathname !== "/maps/embed/v1/place"
+      )
+        continue;
+      // q is the place marker. center is only the camera position.
+      const pair = /^(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)$/u.exec(
+        url.searchParams.get("q") ?? "",
+      );
+      if (!pair) continue;
+      const latitude = Number(pair[1]);
+      const longitude = Number(pair[2]);
+      if (validVenueCoordinates(latitude, longitude))
+        return { latitude, longitude };
+    } catch {
+      continue;
+    }
+  }
+  return null;
 }

@@ -1,9 +1,10 @@
 import { Pool } from "pg";
+import type { VenueQuality } from "./event-quality.js";
 
 import { fallbackSpotName, formatEventTime } from "./event-display.js";
 import type { SearchDebugTimings } from "./search-timing.js";
 
-export type EventRow = {
+export type EventRow = VenueQuality & {
   id: string;
   name: string;
   spotName?: string | null;
@@ -59,7 +60,7 @@ export type VisitedEventRow = {
   rating: number;
 };
 
-export type DiscoveredEventInput = {
+export type DiscoveredEventInput = VenueQuality & {
   id: string;
   name: string;
   spotName?: string | null;
@@ -155,6 +156,7 @@ export interface EventStore {
     query: string;
     startsBefore: Date;
     endsAfter: Date;
+    origin: { latitude: number; longitude: number };
     limit: number;
   }): Promise<EventRow[]>;
   setEventEmbedding(
@@ -302,6 +304,14 @@ export class PostgresEventStore implements EventStore {
       ALTER TABLE events ADD COLUMN IF NOT EXISTS embedding vector(768);
       ALTER TABLE events ADD COLUMN IF NOT EXISTS embedding_model text;
       ALTER TABLE events ADD COLUMN IF NOT EXISTS fetched_at timestamptz;
+      ALTER TABLE events ADD COLUMN IF NOT EXISTS venue_name text;
+      ALTER TABLE events ADD COLUMN IF NOT EXISTS venue_verified boolean NOT NULL DEFAULT false;
+      ALTER TABLE events ADD COLUMN IF NOT EXISTS venue_verified_at timestamptz;
+      ALTER TABLE events ADD COLUMN IF NOT EXISTS coordinate_source text;
+      ALTER TABLE events ADD COLUMN IF NOT EXISTS coordinate_source_url text;
+      ALTER TABLE events ADD COLUMN IF NOT EXISTS time_precision text;
+      ALTER TABLE events ADD COLUMN IF NOT EXISTS hours_text text;
+      CREATE INDEX IF NOT EXISTS events_verified_at_index ON events(venue_verified_at) WHERE venue_verified;
 
       DROP INDEX IF EXISTS events_source_url_unique_index;
       CREATE UNIQUE INDEX IF NOT EXISTS events_source_fingerprint_unique_index
@@ -589,10 +599,11 @@ export class PostgresEventStore implements EventStore {
             detailed_description, latitude, longitude, organizer_name,
             organizer_contact_email, source_provider, source_url,
             source_fingerprint, starts_at, ends_at, content_text, embedding,
-            embedding_model, spot_name, fetched_at
+            embedding_model, spot_name, fetched_at, venue_name, venue_verified, venue_verified_at,
+            coordinate_source, coordinate_source_url, time_precision, hours_text
           ) VALUES (
             $1, $2, $3, $4, $5, '距離計算中', $6, $7, $8, $9, $10, $11,
-            $12, $13, $14, $15, $16, $17, $18, $19::vector, $20, $21, now()
+            $12, $13, $14, $15, $16, $17, $18, $19::vector, $20, $21, COALESCE($24, now()), $22, $23, $24, $25, $26, $27, $28
           )
           ON CONFLICT (source_fingerprint)
             WHERE source_fingerprint IS NOT NULL DO UPDATE SET
@@ -615,14 +626,26 @@ export class PostgresEventStore implements EventStore {
             spot_name = COALESCE(EXCLUDED.spot_name, events.spot_name),
             embedding = COALESCE(EXCLUDED.embedding, events.embedding),
             embedding_model = COALESCE(EXCLUDED.embedding_model, events.embedding_model),
-            fetched_at = now(),
+            venue_name = EXCLUDED.venue_name,
+            venue_verified = EXCLUDED.venue_verified,
+            venue_verified_at = EXCLUDED.venue_verified_at,
+            coordinate_source = EXCLUDED.coordinate_source,
+            coordinate_source_url = EXCLUDED.coordinate_source_url,
+            time_precision = EXCLUDED.time_precision,
+            hours_text = EXCLUDED.hours_text,
+            fetched_at = COALESCE(EXCLUDED.venue_verified_at, events.fetched_at),
             updated_at = now()
           RETURNING id`,
           [
             event.id,
             event.name,
             formatEventDate(event.startsAt),
-            formatEventTime(event.startsAt, event.endsAt),
+            formatEventTime(
+              event.startsAt,
+              event.endsAt,
+              event.timePrecision,
+              event.hoursText,
+            ),
             event.location,
             event.imageUri,
             event.description,
@@ -640,6 +663,13 @@ export class PostgresEventStore implements EventStore {
             embedding,
             event.embeddingModel,
             event.spotName,
+            event.venueName ?? null,
+            event.venueVerified ?? false,
+            event.venueVerifiedAt ?? null,
+            event.coordinateSource ?? null,
+            event.coordinateSourceUrl ?? null,
+            event.timePrecision ?? null,
+            event.hoursText ?? null,
           ],
         );
         const id = result.rows[0]?.id;
@@ -681,26 +711,42 @@ export class PostgresEventStore implements EventStore {
     query: string;
     startsBefore: Date;
     endsAfter: Date;
+    origin: { latitude: number; longitude: number };
     limit: number;
   }) {
     const pattern = input.query ? `%${escapeLike(input.query)}%` : "%";
     const result = await this.pool.query<EventDatabaseRow>(
-      `SELECT events.*,
-        COALESCE(AVG(reviews.rating), 0)::float8 AS rating,
-        COUNT(reviews.id)::int AS review_count
-      FROM events
-      LEFT JOIN reviews ON reviews.event_id = events.id
-      WHERE events.starts_at < $2
-        AND events.ends_at > $3
-        AND (
-          events.name ILIKE $1 ESCAPE '\\'
-          OR events.location ILIKE $1 ESCAPE '\\'
-          OR events.description ILIKE $1 ESCAPE '\\'
-        )
-      GROUP BY events.id
-      ORDER BY events.starts_at
+      `WITH candidates AS (
+        SELECT events.*, row_number() OVER (
+          PARTITION BY lower(regexp_replace(normalize(name, NFKC), '[[:space:]]', '', 'g')), starts_at, ends_at,
+            regexp_replace(translate(normalize(location, NFKC), '‐‑−–—－', '------'), '[[:space:]]', '', 'g')
+          ORDER BY venue_verified_at DESC, id
+        ) AS duplicate_rank
+        FROM events
+        WHERE starts_at < $2 AND ends_at > $3
+          AND venue_verified AND venue_verified_at >= $3::timestamptz - interval '24 hours'
+          AND venue_verified_at <= $3::timestamptz + interval '1 minute'
+          AND coordinate_source IN ('source_page', 'gsi_address')
+          AND latitude BETWEEN 20 AND 46 AND longitude BETWEEN 122 AND 154
+          AND (name ILIKE $1 ESCAPE '\\' OR location ILIKE $1 ESCAPE '\\' OR description ILIKE $1 ESCAPE '\\')
+      ) SELECT events.*, r.rating, r.review_count FROM candidates events
+      LEFT JOIN LATERAL (
+        SELECT COALESCE(AVG(rating), 0)::float8 AS rating, COUNT(*)::int AS review_count
+        FROM reviews WHERE event_id = events.id
+      ) r ON true
+      WHERE duplicate_rank = 1
+      ORDER BY acos(least(1.0, greatest(-1.0,
+        sin(radians($5::float8)) * sin(radians(latitude)) +
+        cos(radians($5::float8)) * cos(radians(latitude)) * cos(radians(longitude - $6::float8)))))
       LIMIT $4`,
-      [pattern, input.startsBefore, input.endsAfter, input.limit],
+      [
+        pattern,
+        input.startsBefore,
+        input.endsAfter,
+        input.limit,
+        input.origin.latitude,
+        input.origin.longitude,
+      ],
     );
     return result.rows.map(mapEvent);
   }
@@ -1019,6 +1065,13 @@ type EventDatabaseRow = {
   id: string;
   name: string;
   spot_name: string | null;
+  venue_name: string | null;
+  venue_verified: boolean;
+  venue_verified_at: Date | null;
+  coordinate_source: VenueQuality["coordinateSource"];
+  coordinate_source_url: string | null;
+  time_precision: VenueQuality["timePrecision"];
+  hours_text: string | null;
   date: string;
   time: string;
   location: string;
@@ -1102,10 +1155,11 @@ type EventSearchJobDatabaseRow = {
 
 type SerializedDiscoveredEvent = Omit<
   DiscoveredEventInput,
-  "startsAt" | "endsAt"
+  "startsAt" | "endsAt" | "venueVerifiedAt"
 > & {
   startsAt: string;
   endsAt: string;
+  venueVerifiedAt?: string | null;
 };
 
 function mapEvent(row: EventDatabaseRow): EventRow {
@@ -1113,6 +1167,13 @@ function mapEvent(row: EventDatabaseRow): EventRow {
     id: row.id,
     name: row.name,
     spotName: row.spot_name,
+    venueName: row.venue_name,
+    venueVerified: row.venue_verified,
+    venueVerifiedAt: row.venue_verified_at,
+    coordinateSource: row.coordinate_source,
+    coordinateSourceUrl: row.coordinate_source_url,
+    timePrecision: row.time_precision,
+    hoursText: row.hours_text,
     date: row.date,
     time: row.time,
     location: row.location,
@@ -1232,6 +1293,9 @@ function deserializeDiscoveredEvent(
     spotName: value.spotName ?? null,
     startsAt: new Date(value.startsAt),
     endsAt: new Date(value.endsAt),
+    venueVerifiedAt: value.venueVerifiedAt
+      ? new Date(value.venueVerifiedAt)
+      : null,
   };
 }
 
