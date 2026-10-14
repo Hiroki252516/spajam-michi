@@ -29,6 +29,7 @@ export interface RevealedEvent {
   name: string;
   description: string;
   detailedDescription: string;
+  arrivalMode?: "gps" | "demo";
 }
 
 export interface EventSearchMetadata {
@@ -136,6 +137,20 @@ export function revealEvent(
         "Content-Type": "application/json",
       },
       body: JSON.stringify(coordinates),
+    },
+  );
+}
+
+/** デモアカウントで到着を体験し、選択した実イベントの名前を取得する。 */
+export function revealDemoEvent(
+  eventId: string,
+  token: string,
+): Promise<RevealedEvent> {
+  return apiRequest<RevealedEvent>(
+    `/api/events/${encodeURIComponent(eventId)}/demo-reveal`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
     },
   );
 }
