@@ -1,16 +1,19 @@
-import React from 'react';
-import { View, ActivityIndicator } from 'react-native';
-import { NavigationContainer } from '@react-navigation/native';
-import { createStackNavigator, StackScreenProps } from '@react-navigation/stack';
-import SearchScreen from '../screens/SearchScreen';
-import GuideScreen from '../screens/GuideScreen';
-import ReviewScreen from '../screens/ReviewScreen';
-import LoginScreen from '../screens/LoginScreen';
-import MyPageScreen from '../screens/MyPageScreen';
-import RegisterScreen from '../screens/RegisterScreen';
-import { COLORS } from '../constants/design';
-import { useAuth } from '../context/AuthContext';
-import type { EventData, RevealedEvent } from '../services/api';
+import React from "react";
+import { View, ActivityIndicator } from "react-native";
+import { NavigationContainer } from "@react-navigation/native";
+import {
+  createStackNavigator,
+  StackScreenProps,
+} from "@react-navigation/stack";
+import SearchScreen from "../screens/SearchScreen";
+import GuideScreen from "../screens/GuideScreen";
+import ReviewScreen from "../screens/ReviewScreen";
+import LoginScreen from "../screens/LoginScreen";
+import MyPageScreen from "../screens/MyPageScreen";
+import RegisterScreen from "../screens/RegisterScreen";
+import { COLORS } from "../constants/design";
+import { useAuth } from "../context/AuthContext";
+import type { EventData, RevealedEvent } from "../services/api";
 
 export type RootStackParamList = {
   Search: undefined;
@@ -32,7 +35,14 @@ export const RootNavigator: React.FC = () => {
 
   if (isLoading) {
     return (
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: COLORS.canvas }}>
+      <View
+        style={{
+          flex: 1,
+          justifyContent: "center",
+          alignItems: "center",
+          backgroundColor: COLORS.canvas,
+        }}
+      >
         <ActivityIndicator size="large" color={COLORS.primary} />
       </View>
     );
@@ -42,7 +52,7 @@ export const RootNavigator: React.FC = () => {
     <NavigationContainer>
       <Stack.Navigator
         id="RootStack"
-        initialRouteName={isLoggedIn ? 'Search' : 'Login'}
+        initialRouteName={isLoggedIn ? "Search" : "Login"}
         screenOptions={{
           headerShown: false,
           cardStyle: { backgroundColor: COLORS.canvas },
@@ -51,34 +61,16 @@ export const RootNavigator: React.FC = () => {
         {!isLoggedIn ? (
           /* 未ログイン時: ログイン画面・新規登録画面を強制 */
           <>
-            <Stack.Screen
-              name="Login"
-              component={LoginScreenContainer}
-            />
-            <Stack.Screen
-              name="Register"
-              component={RegisterScreenContainer}
-            />
+            <Stack.Screen name="Login" component={LoginScreenContainer} />
+            <Stack.Screen name="Register" component={RegisterScreenContainer} />
           </>
         ) : (
           /* ログイン済み時: メインコンテンツ画面群 */
           <>
-            <Stack.Screen
-              name="Search"
-              component={SearchScreenContainer}
-            />
-            <Stack.Screen
-              name="MyPage"
-              component={MyPageScreenContainer}
-            />
-            <Stack.Screen
-              name="Guide"
-              component={GuideScreenContainer}
-            />
-            <Stack.Screen
-              name="Review"
-              component={ReviewScreenContainer}
-            />
+            <Stack.Screen name="Search" component={SearchScreenContainer} />
+            <Stack.Screen name="MyPage" component={MyPageScreenContainer} />
+            <Stack.Screen name="Guide" component={GuideScreenContainer} />
+            <Stack.Screen name="Review" component={ReviewScreenContainer} />
           </>
         )}
       </Stack.Navigator>
@@ -89,19 +81,19 @@ export const RootNavigator: React.FC = () => {
 /**
  * SearchScreen コンテナ
  */
-const SearchScreenContainer: React.FC<StackScreenProps<RootStackParamList, 'Search'>> = ({
-  navigation,
-}) => {
+const SearchScreenContainer: React.FC<
+  StackScreenProps<RootStackParamList, "Search">
+> = ({ navigation }) => {
   return (
     <SearchScreen
       onEventSelect={(event) => {
-        navigation.push('Guide', { event });
+        navigation.push("Guide", { event });
       }}
       onOpenLogin={() => {
-        navigation.push('Login');
+        navigation.push("Login");
       }}
       onOpenMyPage={() => {
-        navigation.push('MyPage');
+        navigation.push("MyPage");
       }}
     />
   );
@@ -110,16 +102,16 @@ const SearchScreenContainer: React.FC<StackScreenProps<RootStackParamList, 'Sear
 /**
  * LoginScreen コンテナ
  */
-const LoginScreenContainer: React.FC<StackScreenProps<RootStackParamList, 'Login'>> = ({
-  navigation,
-}) => {
+const LoginScreenContainer: React.FC<
+  StackScreenProps<RootStackParamList, "Login">
+> = ({ navigation }) => {
   return (
     <LoginScreen
       onLoginSuccess={() => {
         // AuthContext の isLoggedIn が true に変わるため自動的にメイン画面へ切り替わります
       }}
       onNavigateToRegister={() => {
-        navigation.push('Register');
+        navigation.push("Register");
       }}
     />
   );
@@ -128,16 +120,16 @@ const LoginScreenContainer: React.FC<StackScreenProps<RootStackParamList, 'Login
 /**
  * RegisterScreen コンテナ
  */
-const RegisterScreenContainer: React.FC<StackScreenProps<RootStackParamList, 'Register'>> = ({
-  navigation,
-}) => {
+const RegisterScreenContainer: React.FC<
+  StackScreenProps<RootStackParamList, "Register">
+> = ({ navigation }) => {
   return (
     <RegisterScreen
       onRegisterSuccess={() => {
         // AuthContext の isLoggedIn が true に変わるため自動的にメイン画面へ切り替わります
       }}
       onNavigateToLogin={() => {
-        navigation.push('Login');
+        navigation.push("Login");
       }}
       onGoBack={() => {
         navigation.goBack();
@@ -149,9 +141,9 @@ const RegisterScreenContainer: React.FC<StackScreenProps<RootStackParamList, 'Re
 /**
  * MyPageScreen コンテナ
  */
-const MyPageScreenContainer: React.FC<StackScreenProps<RootStackParamList, 'MyPage'>> = ({
-  navigation,
-}) => {
+const MyPageScreenContainer: React.FC<
+  StackScreenProps<RootStackParamList, "MyPage">
+> = ({ navigation }) => {
   return (
     <MyPageScreen
       onGoBack={() => {
@@ -167,19 +159,19 @@ const MyPageScreenContainer: React.FC<StackScreenProps<RootStackParamList, 'MyPa
 /**
  * GuideScreen コンテナ
  */
-const GuideScreenContainer: React.FC<StackScreenProps<RootStackParamList, 'Guide'>> = ({
-  navigation,
-  route,
-}) => {
+const GuideScreenContainer: React.FC<
+  StackScreenProps<RootStackParamList, "Guide">
+> = ({ navigation, route }) => {
   const { event } = route.params;
-  const { token } = useAuth();
+  const { token, user } = useAuth();
 
   return (
     <GuideScreen
       event={event}
-      token={token ?? ''}
+      token={token ?? ""}
+      demoArrivalEnabled={user?.demoArrivalEnabled === true}
       onArrived={(revealedEvent) => {
-        navigation.replace('Review', { event: { ...event, ...revealedEvent } });
+        navigation.replace("Review", { event: { ...event, ...revealedEvent } });
       }}
       onGoBack={() => {
         navigation.goBack();
@@ -191,10 +183,9 @@ const GuideScreenContainer: React.FC<StackScreenProps<RootStackParamList, 'Guide
 /**
  * ReviewScreen コンテナ
  */
-const ReviewScreenContainer: React.FC<StackScreenProps<RootStackParamList, 'Review'>> = ({
-  navigation,
-  route,
-}) => {
+const ReviewScreenContainer: React.FC<
+  StackScreenProps<RootStackParamList, "Review">
+> = ({ navigation, route }) => {
   const { event } = route.params;
 
   return (

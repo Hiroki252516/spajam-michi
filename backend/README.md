@@ -83,6 +83,25 @@ Authorization: Bearer <token>
 
 未認証は`401 AUTHENTICATION_REQUIRED`、座標不正は`400 LOCATION_REQUIRED`です。`meta.currentLocationProvider`は`device_geocoder`です。取得や検証の失敗は`meta.degradedReasons`で区別し、確認できる候補がなければ理由付きで0件を返します。Transit APIで全候補の所要時間を判定できない場合は`ROUTING_UNAVAILABLE`としてジョブが`failed`になります。
 
+## デモ到着・評価
+
+開発環境で「ワンタップでデモログイン」を使うと、イベントの地図画面に「デモ：到着したことにする」が表示されます。
+
+1. イベント一覧から目的地を選択します。
+2. 地図画面で「デモ：到着したことにする」を押します。移動やGPSの到着判定を待たず、選択した実イベントの名前・概要を公開します。
+3. 「デモで参加して満足度を記録する」から星1〜5を選び、保存します。
+
+評価はデモアカウントの実際のレビューとしてDBに保存し、通常のレビューと同じOllama・pgvectorの推薦処理へ渡します。同一ユーザー・同一イベントへの評価は1回までです。デモ到着を押した時点ではレビューを保存せず、評価画面の保存操作で記録します。
+
+ログイン・登録・`GET /api/auth/me`のユーザー情報に`demoArrivalEnabled`を返します。開発環境かつデモアカウント（`dev@spajam.jp`）の場合だけ`true`になり、画面のボタン表示に使います。機能を追加した後は再ログインしてユーザー情報を更新してください。
+
+```http
+POST /api/events/<eventId>/demo-reveal
+Authorization: Bearer <demo-account-token>
+```
+
+リクエスト本文・座標は不要です。既存のイベント名・概要と`arrivalMode: "demo"`を返します。デモ用APIは`enableDevelopmentEndpoints`が有効な環境だけに登録し、サーバーで認証済みデモアカウントかを確認します。未認証は`401`、別アカウントは`403 DEMO_ARRIVAL_NOT_ALLOWED`、存在しないイベントは`404 EVENT_NOT_FOUND`です。`NODE_ENV=production`ではAPIを登録せず、ボタンも表示しません。通常の到着確認APIは100m以内の位置判定と`arrivalMode: "gps"`を使います。
+
 ## 工程別デバッグ計測
 
 サーバー側で`EVENT_SEARCH_DEBUG_TIMINGS=true`を設定し、認証済み検索へ`debug=timings`を指定すると計測できます。環境変数が無効な場合は`403 DEBUG_TIMINGS_DISABLED`、別のdebug値は`400 INVALID_DEBUG_MODE`です。

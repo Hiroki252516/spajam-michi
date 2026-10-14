@@ -26,7 +26,11 @@ export function createApp(
   },
 ) {
   const app = new Hono();
-  const authService = new AuthService(database, options.jwtSecret);
+  const authService = new AuthService(
+    database,
+    options.jwtSecret,
+    options.enableDevelopmentEndpoints === true,
+  );
 
   app.get("/", (context) =>
     context.json({ name: "LED Quattro API", status: "ok" }),
@@ -222,12 +226,7 @@ export function createApp(
 
     return context.json({
       status: "success",
-      data: {
-        id: event.id,
-        name: event.name,
-        description: event.description,
-        detailedDescription: event.detailedDescription,
-      },
+      data: revealedEventDetails(event, "gps"),
     });
   });
 
@@ -340,6 +339,24 @@ export function createApp(
   });
 
   if (options.enableDevelopmentEndpoints) {
+    app.post("/api/events/:eventId/demo-reveal", async (context) => {
+      await authService.authenticateDemoArrival(
+        context.req.header("Authorization"),
+      );
+      const event = await database.findEvent(context.req.param("eventId"));
+      if (!event) {
+        throw new ApiError(
+          404,
+          "EVENT_NOT_FOUND",
+          "指定されたイベントが見つかりません。",
+        );
+      }
+      return context.json({
+        status: "success",
+        data: revealedEventDetails(event, "demo"),
+      });
+    });
+
     app.post("/api/dev/reset", async (context) => {
       await database.resetDevelopmentData();
       return context.json({ status: "success", data: { reset: true } });
@@ -444,6 +461,16 @@ function parseSearchTimingDebug(value: string | undefined, enabled: boolean) {
     );
   }
   return true;
+}
+
+function revealedEventDetails(event: EventRow, arrivalMode: "gps" | "demo") {
+  return {
+    id: event.id,
+    name: event.name,
+    description: event.description,
+    detailedDescription: event.detailedDescription,
+    arrivalMode,
+  };
 }
 
 function toEventSummary(event: EventRow) {
