@@ -3,6 +3,10 @@ import type { VenueQuality } from "./event-quality.js";
 
 import { fallbackSpotName, formatEventTime } from "./event-display.js";
 import type { SearchDebugTimings } from "./search-timing.js";
+import {
+  initialSearchProgress,
+  type SearchProgress,
+} from "./search-progress.js";
 
 export type EventRow = VenueQuality & {
   id: string;
@@ -109,6 +113,8 @@ export type EventSearchJobRow = {
   offset: number;
   debugRequested: boolean;
   debugTimings: SearchDebugTimings | null;
+  revision: number;
+  progress: SearchProgress;
   status: "queued" | "running" | "succeeded" | "failed";
   result: unknown;
   errorCode: string | null;
@@ -205,6 +211,12 @@ export interface EventStore {
     expiresAt: Date;
   }): Promise<EventSearchJobRow>;
   markEventSearchJobRunning(jobId: string, userId: string): Promise<void>;
+  updateEventSearchJob(
+    jobId: string,
+    userId: string,
+    result: unknown,
+    progress: SearchProgress,
+  ): Promise<void>;
   completeEventSearchJob(
     jobId: string,
     userId: string,
@@ -390,6 +402,11 @@ export class PostgresEventStore implements EventStore {
         ADD COLUMN IF NOT EXISTS debug_requested boolean NOT NULL DEFAULT false;
       ALTER TABLE event_search_jobs
         ADD COLUMN IF NOT EXISTS debug_timings jsonb;
+      ALTER TABLE event_search_jobs
+        ADD COLUMN IF NOT EXISTS revision integer NOT NULL DEFAULT 0;
+      ALTER TABLE event_search_jobs
+        ADD COLUMN IF NOT EXISTS progress jsonb NOT NULL DEFAULT
+          '{"phase":"discovering","processedCandidates":0,"totalCandidates":0,"reasonStatus":"pending"}'::jsonb;
 
       CREATE INDEX IF NOT EXISTS event_search_jobs_user_created_index
         ON event_search_jobs(user_id, created_at DESC);
@@ -400,6 +417,8 @@ export class PostgresEventStore implements EventStore {
         status = 'failed',
         error_code = 'SEARCH_INTERRUPTED',
         error_message = 'バックエンドの再起動により検索が中断されました。',
+        progress = progress || '{"phase":"complete","reasonStatus":"failed"}'::jsonb,
+        revision = revision + 1,
         updated_at = now()
       WHERE status IN ('queued', 'running');
     `);
@@ -950,7 +969,9 @@ export class PostgresEventStore implements EventStore {
     await this.pool.query(
       `UPDATE event_search_jobs SET status = 'succeeded', result = $3::jsonb,
          debug_timings = $4::jsonb, error_code = NULL, error_message = NULL,
-         updated_at = now()
+         progress = progress || jsonb_build_object('phase', 'complete', 'reasonStatus',
+           CASE WHEN progress->>'reasonStatus' = 'failed' THEN 'failed' ELSE 'completed' END),
+         revision = revision + 1, updated_at = now()
        WHERE id = $1 AND user_id = $2 AND status IN ('queued', 'running')`,
       [
         jobId,
@@ -970,7 +991,9 @@ export class PostgresEventStore implements EventStore {
   ) {
     await this.pool.query(
       `UPDATE event_search_jobs SET status = 'failed', error_code = $3,
-         error_message = $4, debug_timings = $5::jsonb, updated_at = now()
+         error_message = $4, debug_timings = $5::jsonb,
+         progress = progress || '{"phase":"complete","reasonStatus":"failed"}'::jsonb,
+         revision = revision + 1, updated_at = now()
        WHERE id = $1 AND user_id = $2 AND status IN ('queued', 'running')`,
       [
         jobId,
@@ -992,6 +1015,20 @@ export class PostgresEventStore implements EventStore {
       [jobId, userId],
     );
     return result.rows[0] ? mapEventSearchJob(result.rows[0]) : null;
+  }
+
+  async updateEventSearchJob(
+    jobId: string,
+    userId: string,
+    result: unknown,
+    progress: SearchProgress,
+  ) {
+    await this.pool.query(
+      `UPDATE event_search_jobs SET result = $3::jsonb, progress = $4::jsonb,
+         revision = revision + 1, updated_at = now()
+       WHERE id = $1 AND user_id = $2 AND status = 'running'`,
+      [jobId, userId, JSON.stringify(result), JSON.stringify(progress)],
+    );
   }
 
   async close() {
@@ -1144,6 +1181,8 @@ type EventSearchJobDatabaseRow = {
   result_offset: number;
   debug_requested: boolean;
   debug_timings: SearchDebugTimings | null;
+  revision: number;
+  progress: SearchProgress;
   status: "queued" | "running" | "succeeded" | "failed";
   result: unknown;
   error_code: string | null;
@@ -1242,6 +1281,16 @@ function mapPreferenceMemory(
 }
 
 function mapEventSearchJob(row: EventSearchJobDatabaseRow): EventSearchJobRow {
+  const progress = { ...initialSearchProgress(), ...row.progress };
+  if (row.status === "succeeded" || row.status === "failed") {
+    progress.phase = "complete";
+    if (
+      progress.reasonStatus === "pending" ||
+      progress.reasonStatus === "generating"
+    ) {
+      progress.reasonStatus = row.status === "failed" ? "failed" : "completed";
+    }
+  }
   return {
     id: row.id,
     userId: row.user_id,
@@ -1250,6 +1299,8 @@ function mapEventSearchJob(row: EventSearchJobDatabaseRow): EventSearchJobRow {
     offset: row.result_offset,
     debugRequested: row.debug_requested,
     debugTimings: row.debug_timings,
+    revision: row.revision ?? 0,
+    progress,
     status: row.status,
     result: row.result,
     errorCode: row.error_code,

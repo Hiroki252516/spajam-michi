@@ -3,8 +3,82 @@ import { it } from "node:test";
 
 import { openDatabase, type DiscoveredEventInput } from "./database.js";
 import { SearchTimingCollector } from "./search-timing.js";
+import { initialSearchProgress } from "./search-progress.js";
 
 const integrationUrl = process.env.DATABASE_INTEGRATION_URL;
+
+it(
+  "persists partial revisions and preserves confirmed results across failures and restarts",
+  { skip: !integrationUrl },
+  async () => {
+    const store = await openDatabase(integrationUrl!, false);
+    try {
+      const id = `issue14-${Date.now()}`;
+      await store.createUser({
+        id,
+        name: "検索テスト",
+        email: `${id}@example.com`,
+        passwordHash: "not-used",
+      });
+      const create = async (suffix: string) =>
+        store.createEventSearchJob({
+          id: `${id}-${suffix}`,
+          userId: id,
+          query: "イベント",
+          limit: 20,
+          offset: 0,
+          debugRequested: false,
+          expiresAt: new Date(Date.now() + 60_000),
+        });
+      const job = await create("failed");
+      assert.equal(job.revision, 0);
+      assert.deepEqual(job.progress, initialSearchProgress());
+      const result = { events: [{ id: "confirmed" }], total: 1 };
+      const progress = {
+        ...initialSearchProgress(),
+        phase: "routing" as const,
+        processedCandidates: 1,
+        totalCandidates: 2,
+      };
+      await store.markEventSearchJobRunning(job.id, id);
+      await store.updateEventSearchJob(job.id, id, result, progress);
+      await store.updateEventSearchJob(job.id, id, result, {
+        ...progress,
+        processedCandidates: 2,
+      });
+      const partial = await store.findEventSearchJob(job.id, id);
+      assert.equal(partial?.revision, 2);
+      assert.equal(partial?.status, "running");
+      assert.equal(partial?.progress.processedCandidates, 2);
+      assert.equal(await store.findEventSearchJob(job.id, "other-user"), null);
+      await store.failEventSearchJob(
+        job.id,
+        id,
+        "SEARCH_INTERRUPTED",
+        "interrupted",
+        null,
+      );
+      const failed = await store.findEventSearchJob(job.id, id);
+      assert.deepEqual(failed?.result, result);
+      assert.equal(failed?.progress.phase, "complete");
+      await store.updateEventSearchJob(job.id, id, { events: [] }, progress);
+      assert.equal(
+        (await store.findEventSearchJob(job.id, id))?.revision,
+        failed?.revision,
+      );
+      const restarting = await create("restart");
+      await store.markEventSearchJobRunning(restarting.id, id);
+      await store.updateEventSearchJob(restarting.id, id, result, progress);
+      await store.initialize(false);
+      const interrupted = await store.findEventSearchJob(restarting.id, id);
+      assert.equal(interrupted?.errorCode, "SEARCH_INTERRUPTED");
+      assert.equal(interrupted?.revision, 2);
+      assert.deepEqual(interrupted?.result, result);
+    } finally {
+      await store.close();
+    }
+  },
+);
 
 it(
   "initializes pgvector and performs vector-backed persistence",

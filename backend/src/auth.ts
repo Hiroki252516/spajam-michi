@@ -9,6 +9,7 @@ import type { EventStore, UserRow } from "./database.js";
 import { ApiError } from "./errors.js";
 
 const TOKEN_LIFETIME_SECONDS = 24 * 60 * 60;
+const DEVELOPMENT_USER_EMAIL = "dev@spajam.jp";
 
 export class AuthService {
   private readonly jwtKey: Uint8Array;
@@ -16,6 +17,7 @@ export class AuthService {
   constructor(
     private readonly store: EventStore,
     jwtSecret: string,
+    private readonly demoArrivalEnabled = false,
   ) {
     if (jwtSecret.length < 32) {
       throw new Error("JWT_SECRET must be at least 32 characters");
@@ -119,18 +121,40 @@ export class AuthService {
     }
   }
 
+  async authenticateDemoArrival(authorization: string | undefined) {
+    const session = await this.authenticate(authorization);
+    const user = await this.store.findUserById(session.userId);
+    if (!user) throw unauthorized();
+    if (!this.canDemoArrival(user)) {
+      throw new ApiError(
+        403,
+        "DEMO_ARRIVAL_NOT_ALLOWED",
+        "デモ到着はデモアカウントでご利用ください。",
+      );
+    }
+    return session;
+  }
+
+  private canDemoArrival(user: UserRow) {
+    return (
+      this.demoArrivalEnabled &&
+      normalizeEmail(user.email) === DEVELOPMENT_USER_EMAIL
+    );
+  }
+
   private async profile(user: UserRow) {
     return {
       id: user.id,
       name: user.name,
       avatarUrl: user.avatarUrl,
+      demoArrivalEnabled: this.canDemoArrival(user),
       visitedEvents: await this.store.listVisitedEvents(user.id),
     };
   }
 }
 
 export async function ensureDevelopmentUser(store: EventStore) {
-  const email = "dev@spajam.jp";
+  const email = DEVELOPMENT_USER_EMAIL;
   if (await store.findUserByEmail(email)) return;
   await store.createUser({
     id: "usr_spajam2026",

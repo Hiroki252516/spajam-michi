@@ -20,7 +20,28 @@ export type TransitRoute = {
   fare?: TransitFare | null;
   destinationWalkSeconds?: number;
   nearbyAreaName?: string;
+  routeCached?: boolean;
+  routeCalculatedAt?: string;
 };
+
+export type RouteCompletion = (
+  index: number,
+  route: TransitRoute | null,
+  failed: boolean,
+) => Promise<void>;
+
+type CachedRoute = {
+  origin: Coordinates;
+  destination: Coordinates;
+  departureMs: number;
+  date: string;
+  route: TransitRoute;
+  expiryTimer?: ReturnType<typeof setTimeout>;
+};
+
+const ROUTE_CACHE_TTL_MS = 3 * 60_000;
+const ROUTE_CACHE_ORIGIN_METERS = 30;
+const ROUTE_CACHE_CAPACITY = 1_000;
 
 type NearbyTransitEndpoint = {
   endpoint: string;
@@ -34,9 +55,12 @@ type NearbyTransitEndpoint = {
 export class TransitApiError extends Error {}
 
 export class TransitApiClient {
+  private readonly routeCache = new Map<string, CachedRoute>();
+
   constructor(
     private readonly baseUrl = "https://api.transit.ls8h.com",
     private readonly fetchImplementation: typeof fetch = fetch,
+    private readonly now: () => number = Date.now,
   ) {}
 
   async computeRoutes(
@@ -45,6 +69,7 @@ export class TransitApiClient {
     departureAt: Date,
     signal?: AbortSignal,
     timings?: SearchTimingCollector,
+    onCompleted?: RouteCompletion,
   ) {
     if (destinations.length === 0) return [];
     const routes: (TransitRoute | null)[] = Array.from(
@@ -59,19 +84,48 @@ export class TransitApiClient {
         const destinationIndex = nextIndex;
         nextIndex += 1;
         const destination = destinations[destinationIndex]!;
+        let failed = false;
         try {
-          routes[destinationIndex] = await this.planOne(
-            origin,
-            destination,
-            destinationIndex,
-            departureAt,
-            signal,
+          signal?.throwIfAborted();
+          const cached = await measureSearchTiming(
             timings,
+            "transitRouting",
+            "routeCacheLookup",
+            async () => this.cachedRoute(origin, destination, departureAt),
           );
+          const route: TransitRoute | null =
+            cached ??
+            (await this.planOne(
+              origin,
+              destination,
+              destinationIndex,
+              departureAt,
+              signal,
+              timings,
+            ));
+          if (route) {
+            const calculated = {
+              ...route,
+              destinationIndex,
+              distanceMeters: haversineMeters(origin, destination),
+              routeCached: cached !== null,
+              routeCalculatedAt:
+                route.routeCalculatedAt ?? departureAt.toISOString(),
+            };
+            routes[destinationIndex] = calculated;
+            if (!cached)
+              this.rememberRoute(origin, destination, departureAt, calculated);
+          }
           successfulRequests += 1;
         } catch (error) {
           errors.push(error);
+          failed = true;
         }
+        await onCompleted?.(
+          destinationIndex,
+          routes[destinationIndex]!,
+          failed,
+        );
       }
     };
     await Promise.all(
@@ -86,6 +140,83 @@ export class TransitApiClient {
           );
     }
     return routes;
+  }
+
+  private cachedRoute(
+    origin: Coordinates,
+    destination: Coordinates,
+    departureAt: Date,
+  ) {
+    let match: [string, CachedRoute] | undefined;
+    let nearest = Infinity;
+    const now = this.now();
+    const date = formatTokyoDate(departureAt);
+    for (const [key, cached] of this.routeCache) {
+      if (now >= cached.departureMs + ROUTE_CACHE_TTL_MS) {
+        this.deleteCachedRoute(key);
+        continue;
+      }
+      const timeDifference = departureAt.getTime() - cached.departureMs;
+      if (
+        timeDifference < 0 ||
+        timeDifference >= ROUTE_CACHE_TTL_MS ||
+        cached.date !== date ||
+        cached.destination.latitude !== destination.latitude ||
+        cached.destination.longitude !== destination.longitude
+      )
+        continue;
+      const distance = haversineMeters(origin, cached.origin);
+      if (distance <= ROUTE_CACHE_ORIGIN_METERS && distance < nearest) {
+        match = [key, cached];
+        nearest = distance;
+      }
+    }
+    if (!match) return null;
+    this.routeCache.delete(match[0]);
+    this.routeCache.set(...match);
+    return {
+      ...match[1].route,
+      fare: match[1].route.fare ? { ...match[1].route.fare } : null,
+    };
+  }
+
+  private rememberRoute(
+    origin: Coordinates,
+    destination: Coordinates,
+    departureAt: Date,
+    route: TransitRoute,
+  ) {
+    if (this.now() >= departureAt.getTime() + ROUTE_CACHE_TTL_MS) return;
+    for (const [key, cached] of this.routeCache) {
+      if (this.now() >= cached.departureMs + ROUTE_CACHE_TTL_MS)
+        this.deleteCachedRoute(key);
+    }
+    // A client owns one API configuration; replacing it starts with an empty cache.
+    const key = `${origin.latitude},${origin.longitude}|${destination.latitude},${destination.longitude}|${formatTokyoDate(departureAt)}`;
+    this.deleteCachedRoute(key);
+    const cached: CachedRoute = {
+      origin: { ...origin },
+      destination: { ...destination },
+      departureMs: departureAt.getTime(),
+      date: formatTokyoDate(departureAt),
+      route: { ...route, fare: route.fare ? { ...route.fare } : null },
+    };
+    cached.expiryTimer = setTimeout(
+      () => {
+        if (this.routeCache.get(key) === cached) this.deleteCachedRoute(key);
+      },
+      departureAt.getTime() + ROUTE_CACHE_TTL_MS - this.now(),
+    );
+    cached.expiryTimer.unref();
+    this.routeCache.set(key, cached);
+    while (this.routeCache.size > ROUTE_CACHE_CAPACITY) {
+      this.deleteCachedRoute(this.routeCache.keys().next().value!);
+    }
+  }
+
+  private deleteCachedRoute(key: string) {
+    clearTimeout(this.routeCache.get(key)?.expiryTimer);
+    this.routeCache.delete(key);
   }
 
   async resolveNearbyAreas(

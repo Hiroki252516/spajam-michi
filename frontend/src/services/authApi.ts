@@ -1,4 +1,4 @@
-import { apiRequest } from './apiClient';
+import { apiRequest } from "./apiClient";
 
 export interface VisitedEventItem {
   id: string;
@@ -13,6 +13,7 @@ export interface UserProfile {
   avatarUrl?: string | null;
   visitedEvents: VisitedEventItem[];
   isFirstLogin?: boolean;
+  demoArrivalEnabled?: boolean;
 }
 
 export interface AuthResponse {
@@ -24,6 +25,7 @@ interface BackendUserProfile {
   id: string;
   name: string;
   avatarUrl?: string | null;
+  demoArrivalEnabled?: boolean;
   visitedEvents?: Array<{
     id: string;
     spotName?: string;
@@ -39,8 +41,8 @@ interface BackendAuthResponse {
 }
 
 const DEMO_CREDENTIALS = {
-  email: 'dev@spajam.jp',
-  password: 'demo1234',
+  email: "dev@spajam.jp",
+  password: "demo1234",
 };
 
 function normalizeAuthResponse(response: BackendAuthResponse): AuthResponse {
@@ -50,9 +52,10 @@ function normalizeAuthResponse(response: BackendAuthResponse): AuthResponse {
       id: response.user.id,
       name: response.user.name,
       avatarUrl: response.user.avatarUrl ?? null,
+      demoArrivalEnabled: response.user.demoArrivalEnabled === true,
       visitedEvents: (response.user.visitedEvents ?? []).map((event) => ({
         id: event.id,
-        eventName: event.eventName ?? event.spotName ?? 'イベント',
+        eventName: event.eventName ?? event.spotName ?? "イベント",
         visitedDate: event.visitedDate,
         rating: event.rating,
       })),
@@ -63,8 +66,8 @@ function normalizeAuthResponse(response: BackendAuthResponse): AuthResponse {
 
 async function authenticate(email: string, password: string, path: string) {
   const response = await apiRequest<BackendAuthResponse>(path, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password }),
   });
   return normalizeAuthResponse(response);
@@ -73,27 +76,31 @@ async function authenticate(email: string, password: string, path: string) {
 export const loginApi = async (
   email: string,
   password: string,
-): Promise<AuthResponse> => authenticate(email, password, '/api/auth/login');
+): Promise<AuthResponse> => authenticate(email, password, "/api/auth/login");
 
 export const demoLoginApi = async (): Promise<AuthResponse> =>
-  authenticate(DEMO_CREDENTIALS.email, DEMO_CREDENTIALS.password, '/api/auth/login');
+  authenticate(
+    DEMO_CREDENTIALS.email,
+    DEMO_CREDENTIALS.password,
+    "/api/auth/login",
+  );
 
 export const registerApi = async (
   name: string,
   email: string,
   password: string,
 ): Promise<AuthResponse> => {
-  const response = await apiRequest<BackendAuthResponse>('/api/auth/register', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+  const response = await apiRequest<BackendAuthResponse>("/api/auth/register", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name, email, password }),
   });
   return normalizeAuthResponse(response);
 };
 
 export const logoutApi = async (token: string): Promise<void> => {
-  await apiRequest<{ message: string }>('/api/auth/logout', {
-    method: 'POST',
+  await apiRequest<{ message: string }>("/api/auth/logout", {
+    method: "POST",
     headers: { Authorization: `Bearer ${token}` },
   });
 };

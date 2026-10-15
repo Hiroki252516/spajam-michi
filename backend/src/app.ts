@@ -13,6 +13,7 @@ import {
   type EventRecommendationService,
 } from "./recommendation.js";
 import { SearchTimingCollector } from "./search-timing.js";
+import { initialSearchProgress } from "./search-progress.js";
 
 const ARRIVAL_VERIFICATION_DISTANCE_METERS = 100;
 
@@ -26,7 +27,11 @@ export function createApp(
   },
 ) {
   const app = new Hono();
-  const authService = new AuthService(database, options.jwtSecret);
+  const authService = new AuthService(
+    database,
+    options.jwtSecret,
+    options.enableDevelopmentEndpoints === true,
+  );
 
   app.get("/", (context) =>
     context.json({ name: "LED Quattro API", status: "ok" }),
@@ -147,18 +152,27 @@ export function createApp(
         "検索ジョブが見つからないか、有効期限が切れています。",
       );
     }
+    const result = job.result as EventSearchResult | null;
+    const partial = {
+      jobId: job.id,
+      status: job.status,
+      revision: job.revision ?? 0,
+      progress: job.progress ?? initialSearchProgress(),
+      ...(result
+        ? {
+            events: result.events.map(toEventSummary),
+            total: result.total,
+            limit: job.limit,
+            offset: job.offset,
+            meta: result.meta,
+          }
+        : {}),
+    };
     if (job.status === "succeeded") {
-      const result = job.result as EventSearchResult;
       return context.json({
         status: "success",
         data: {
-          jobId: job.id,
-          status: job.status,
-          events: result.events.map(toEventSummary),
-          total: result.total,
-          limit: job.limit,
-          offset: job.offset,
-          meta: result.meta,
+          ...partial,
         },
       });
     }
@@ -166,8 +180,7 @@ export function createApp(
       return context.json({
         status: "success",
         data: {
-          jobId: job.id,
-          status: job.status,
+          ...partial,
           error: {
             code: job.errorCode ?? "EVENT_SEARCH_FAILED",
             message: job.errorMessage ?? "イベント検索を完了できませんでした。",
@@ -180,7 +193,7 @@ export function createApp(
     }
     return context.json({
       status: "success",
-      data: { jobId: job.id, status: job.status },
+      data: partial,
     });
   });
 
@@ -222,12 +235,7 @@ export function createApp(
 
     return context.json({
       status: "success",
-      data: {
-        id: event.id,
-        name: event.name,
-        description: event.description,
-        detailedDescription: event.detailedDescription,
-      },
+      data: revealedEventDetails(event, "gps"),
     });
   });
 
@@ -340,6 +348,24 @@ export function createApp(
   });
 
   if (options.enableDevelopmentEndpoints) {
+    app.post("/api/events/:eventId/demo-reveal", async (context) => {
+      await authService.authenticateDemoArrival(
+        context.req.header("Authorization"),
+      );
+      const event = await database.findEvent(context.req.param("eventId"));
+      if (!event) {
+        throw new ApiError(
+          404,
+          "EVENT_NOT_FOUND",
+          "指定されたイベントが見つかりません。",
+        );
+      }
+      return context.json({
+        status: "success",
+        data: revealedEventDetails(event, "demo"),
+      });
+    });
+
     app.post("/api/dev/reset", async (context) => {
       await database.resetDevelopmentData();
       return context.json({ status: "success", data: { reset: true } });
@@ -383,6 +409,7 @@ async function runEventSearchJob(input: {
   const timings = input.debugRequested
     ? new SearchTimingCollector(input.jobId)
     : undefined;
+  let writes = Promise.resolve();
   try {
     await input.database.markEventSearchJobRunning(input.jobId, input.userId);
     const result = await input.recommendationService.search({
@@ -394,7 +421,21 @@ async function runEventSearchJob(input: {
       limit: input.limit,
       offset: input.offset,
       timings,
+      onProgress: (result, progress) => {
+        const write = writes.then(async () => {
+          await input.database.updateEventSearchJob(
+            input.jobId,
+            input.userId,
+            result,
+            progress,
+          );
+          if (result.events.length) timings?.markFirstResult();
+        });
+        writes = write.catch(() => {});
+        return write;
+      },
     });
+    await writes;
     const debugTimings = timings?.snapshot() ?? null;
     if (debugTimings) {
       result.meta.debugTimings = debugTimings;
@@ -407,6 +448,7 @@ async function runEventSearchJob(input: {
       debugTimings,
     );
   } catch (error) {
+    await writes;
     let errorCode = "EVENT_SEARCH_FAILED";
     let errorMessage = "イベント検索を完了できませんでした。";
     if (error instanceof RoutingUnavailableError) {
@@ -446,6 +488,16 @@ function parseSearchTimingDebug(value: string | undefined, enabled: boolean) {
   return true;
 }
 
+function revealedEventDetails(event: EventRow, arrivalMode: "gps" | "demo") {
+  return {
+    id: event.id,
+    name: event.name,
+    description: event.description,
+    detailedDescription: event.detailedDescription,
+    arrivalMode,
+  };
+}
+
 function toEventSummary(event: EventRow) {
   return {
     id: event.id,
@@ -469,6 +521,8 @@ function toEventSummary(event: EventRow) {
           travelMode: event.travelMode,
           travelDurationMinutes: event.travelDurationMinutes,
           recommendationReason: event.recommendationReason,
+          routeCached: event.routeCached,
+          routeCalculatedAt: event.routeCalculatedAt,
         }
       : {}),
   };
@@ -481,6 +535,8 @@ function isRecommendedEvent(event: EventRow): event is EventRow & {
   travelMode: "TRANSIT" | "WALK";
   travelDurationMinutes: number;
   recommendationReason: string;
+  routeCached?: boolean;
+  routeCalculatedAt?: string;
 } {
   return "travelMode" in event;
 }

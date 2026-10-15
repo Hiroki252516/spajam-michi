@@ -1,10 +1,10 @@
-import Constants from 'expo-constants';
+import Constants from "expo-constants";
 
 const configuredBaseUrl = process.env.EXPO_PUBLIC_API_URL?.trim();
 const expoHostUri = Constants.expoConfig?.hostUri;
 
 function getApiBaseUrl() {
-  if (configuredBaseUrl) return configuredBaseUrl.replace(/\/+$/, '');
+  if (configuredBaseUrl) return configuredBaseUrl.replace(/\/+$/, "");
 
   if (expoHostUri) {
     try {
@@ -15,13 +15,13 @@ function getApiBaseUrl() {
     }
   }
 
-  return 'http://localhost:8080';
+  return "http://localhost:8080";
 }
 
 export const API_BASE_URL = getApiBaseUrl();
 
 interface ApiEnvelope<T> {
-  status: 'success' | 'error';
+  status: "success" | "error";
   data?: T;
   error?: {
     code?: string;
@@ -36,7 +36,7 @@ export class ApiRequestError extends Error {
     readonly code?: string,
   ) {
     super(message);
-    this.name = 'ApiRequestError';
+    this.name = "ApiRequestError";
   }
 }
 
@@ -48,6 +48,11 @@ export async function apiRequest<T>(
   try {
     response = await fetch(new URL(path, `${API_BASE_URL}/`).toString(), init);
   } catch {
+    if (init.signal?.aborted) {
+      const error = new Error("リクエストを中止しました。");
+      error.name = "AbortError";
+      throw error;
+    }
     throw new ApiRequestError(
       `バックエンドに接続できません。API接続先 (${API_BASE_URL}) とMac・iPhoneの同一ネットワーク接続を確認してください。`,
     );
@@ -63,16 +68,20 @@ export async function apiRequest<T>(
     );
   }
 
-  if (!response.ok || envelope.status === 'error') {
+  if (!response.ok || envelope.status === "error") {
     throw new ApiRequestError(
-      envelope.error?.message ?? `バックエンドでエラーが発生しました (HTTP ${response.status})。`,
+      envelope.error?.message ??
+        `バックエンドでエラーが発生しました (HTTP ${response.status})。`,
       response.status,
       envelope.error?.code,
     );
   }
 
   if (envelope.data === undefined) {
-    throw new ApiRequestError('バックエンド応答にデータがありません。', response.status);
+    throw new ApiRequestError(
+      "バックエンド応答にデータがありません。",
+      response.status,
+    );
   }
 
   return envelope.data;
