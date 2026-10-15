@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   FlatList,
   ScrollView,
@@ -12,8 +12,9 @@ import {
 } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Location from "expo-location";
+import { useIsFocused } from "@react-navigation/native";
 import ScreenContainer from "../components/ScreenContainer";
-import EventCard, { type EventCardData } from "../components/EventCard";
+import EventCard from "../components/EventCard";
 import CardComponent from "../components/CardComponent";
 import {
   COLORS,
@@ -26,6 +27,11 @@ import { searchEvents } from "../services/api";
 import type { EventData, EventSearchResponse } from "../services/api";
 import { useAuth } from "../context/AuthContext";
 import { buildSearchArea } from "../services/locality";
+import {
+  abortSearchError,
+  type SearchProgress,
+  type SearchUpdate,
+} from "../services/searchJob";
 
 interface SearchScreenProps {
   onEventSelect: (event: EventData) => void;
@@ -71,14 +77,22 @@ const SearchScreen: React.FC<SearchScreenProps> = ({
   onOpenMyPage,
 }) => {
   const { isLoggedIn, user, token, completeTutorial } = useAuth();
+  const isFocused = useIsFocused();
   const [activeTab, setActiveTab] = useState<"events" | "guide">(
     user?.isFirstLogin ? "guide" : "events",
   );
-  const [events, setEvents] = useState<EventCardData[]>([]);
+  const [events, setEvents] = useState<EventData[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [searchNotice, setSearchNotice] = useState<string | null>(null);
+  const [searchProgress, setSearchProgress] = useState<SearchProgress | null>(
+    null,
+  );
+  const activeSearch = useRef<AbortController | null>(null);
+  const searchedToken = useRef<string | null>(null);
+  const eventsRef = useRef(events);
+  eventsRef.current = events;
 
   useEffect(() => {
     if (user?.isFirstLogin) {
@@ -91,108 +105,156 @@ const SearchScreen: React.FC<SearchScreenProps> = ({
     setActiveTab("events");
   };
 
-  const fetchCurrentEvents = useCallback(async () => {
-    if (!token) throw new Error("ログインしてからイベントを検索してください。");
+  const fetchCurrentEvents = useCallback(
+    async (signal: AbortSignal, onProgress: (update: SearchUpdate) => void) => {
+      if (!token)
+        throw new Error("ログインしてからイベントを検索してください。");
+      const checkCancelled = () => {
+        if (signal.aborted) throw abortSearchError();
+      };
+      checkCancelled();
 
-    let permission = await Location.getForegroundPermissionsAsync();
-    if (!permission.granted) {
-      permission = await Location.requestForegroundPermissionsAsync();
-    }
-    if (!permission.granted) {
-      throw new Error(
-        "イベント検索には位置情報の許可が必要です。iPhoneの設定からExpo Goの位置情報を許可してください。",
-      );
-    }
-    if (!(await Location.hasServicesEnabledAsync())) {
-      throw new Error("iPhoneの位置情報サービスを有効にしてください。");
-    }
+      let permission = await Location.getForegroundPermissionsAsync();
+      if (!permission.granted) {
+        permission = await Location.requestForegroundPermissionsAsync();
+      }
+      if (!permission.granted) {
+        throw new Error(
+          "イベント検索には位置情報の許可が必要です。iPhoneの設定からExpo Goの位置情報を許可してください。",
+        );
+      }
+      if (!(await Location.hasServicesEnabledAsync())) {
+        throw new Error("iPhoneの位置情報サービスを有効にしてください。");
+      }
 
-    const position = await Location.getCurrentPositionAsync({
-      accuracy: Location.Accuracy.Balanced,
-    });
-    let area: string | null = null;
-    try {
-      const addresses = await Location.reverseGeocodeAsync(position.coords);
-      area =
-        addresses.map(buildSearchArea).find((value) => value !== null) ?? null;
-    } catch {
-      throw new Error(
-        "現在地の地域名を取得できませんでした。時間をおいて現在地から再検索してください。",
-      );
-    }
-    if (!area)
-      throw new Error(
-        "現在地の市区町村を確認できませんでした。現在地から再検索してください。",
-      );
-    return searchEvents({
-      token,
-      latitude: position.coords.latitude,
-      longitude: position.coords.longitude,
-      area,
-    });
-  }, [token]);
+      const position = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+      checkCancelled();
+      let area: string | null = null;
+      try {
+        const addresses = await Location.reverseGeocodeAsync(position.coords);
+        area =
+          addresses.map(buildSearchArea).find((value) => value !== null) ??
+          null;
+      } catch {
+        checkCancelled();
+        throw new Error(
+          "現在地の地域名を取得できませんでした。時間をおいて現在地から再検索してください。",
+        );
+      }
+      if (!area)
+        throw new Error(
+          "現在地の市区町村を確認できませんでした。現在地から再検索してください。",
+        );
+      checkCancelled();
+      return searchEvents({
+        token,
+        latitude: position.coords.latitude,
+        longitude: position.coords.longitude,
+        area,
+        signal,
+        onProgress,
+      });
+    },
+    [token],
+  );
+
+  const loadEvents = useCallback(
+    async (refresh: boolean) => {
+      activeSearch.current?.abort();
+      const controller = new AbortController();
+      activeSearch.current = controller;
+      const isCurrent = () =>
+        activeSearch.current === controller && !controller.signal.aborted;
+      setIsLoading(eventsRef.current.length === 0);
+      setIsRefreshing(refresh);
+      setLoadError(null);
+      setSearchNotice(null);
+      setSearchProgress({
+        phase: "discovering",
+        processedCandidates: 0,
+        totalCandidates: 0,
+        reasonStatus: "pending",
+      });
+      const updateNotice = (result: EventSearchResponse) =>
+        setSearchNotice(
+          result.meta.source === "database_fallback" && result.events.length > 0
+            ? "新しいイベント情報を取得できなかったため、24時間以内に確認した保存済みの候補を表示しています。"
+            : null,
+        );
+      try {
+        const result = await fetchCurrentEvents(controller.signal, (update) => {
+          if (!isCurrent()) return;
+          setSearchProgress(update.progress);
+          if (update.events.length > 0) {
+            eventsRef.current = update.events;
+            setEvents(update.events);
+            setIsLoading(false);
+            setIsRefreshing(false);
+            updateNotice(update);
+          }
+        });
+        if (!isCurrent()) return;
+        eventsRef.current = result.events;
+        setEvents(result.events);
+        setLoadError(emptySearchMessage(result));
+        updateNotice(result);
+      } catch (error) {
+        if (!isCurrent()) return;
+        const message =
+          error instanceof Error
+            ? error.message
+            : "イベントを検索できませんでした。";
+        if (eventsRef.current.length > 0)
+          setSearchNotice(
+            `更新が中断されました。取得済みの候補を表示しています。${message}`,
+          );
+        else setLoadError(message);
+      } finally {
+        if (isCurrent()) {
+          setSearchProgress(null);
+          setIsLoading(false);
+          setIsRefreshing(false);
+        }
+      }
+    },
+    [fetchCurrentEvents],
+  );
 
   useEffect(() => {
-    let isMounted = true;
-    const initialLoad = async () => {
-      setIsLoading(true);
-      setLoadError(null);
-      try {
-        const result = await fetchCurrentEvents();
-        if (isMounted) {
-          setEvents(result.events);
-          setLoadError(emptySearchMessage(result));
-          setSearchNotice(
-            result.meta.source === "database_fallback" &&
-              result.events.length > 0
-              ? "新しいイベント情報を取得できなかったため、24時間以内に確認した保存済みの候補を表示しています。"
-              : null,
-          );
-        }
-      } catch (error) {
-        if (isMounted) {
-          setEvents([]);
-          setSearchNotice(null);
-          setLoadError(
-            error instanceof Error
-              ? error.message
-              : "イベントを検索できませんでした。",
-          );
-        }
-      } finally {
-        if (isMounted) setIsLoading(false);
-      }
-    };
-
-    void initialLoad();
-    return () => {
-      isMounted = false;
-    };
-  }, [fetchCurrentEvents]);
-
-  const handleRefresh = async () => {
-    setIsRefreshing(true);
-    setLoadError(null);
-    try {
-      const result = await fetchCurrentEvents();
-      setEvents(result.events);
-      setLoadError(emptySearchMessage(result));
-      setSearchNotice(
-        result.meta.source === "database_fallback" && result.events.length > 0
-          ? "新しいイベント情報を取得できなかったため、24時間以内に確認した保存済みの候補を表示しています。"
-          : null,
-      );
-    } catch (error) {
+    if (!token) {
+      searchedToken.current = null;
+      eventsRef.current = [];
       setEvents([]);
-      setSearchNotice(null);
-      setLoadError(
-        error instanceof Error
-          ? error.message
-          : "イベントを検索できませんでした。",
-      );
-    } finally {
+      setIsLoading(false);
       setIsRefreshing(false);
+      setSearchProgress(null);
+      setSearchNotice(null);
+      return;
     }
+    if (!isFocused) {
+      activeSearch.current?.abort();
+      setSearchProgress(null);
+      setIsLoading(false);
+      setIsRefreshing(false);
+      return;
+    }
+    if (searchedToken.current !== token || eventsRef.current.length === 0) {
+      if (searchedToken.current !== token) {
+        eventsRef.current = [];
+        setEvents([]);
+      }
+      searchedToken.current = token;
+      void loadEvents(false);
+    }
+    return () => {
+      activeSearch.current?.abort();
+    };
+  }, [loadEvents, token, isFocused]);
+
+  const handleRefresh = () => {
+    void loadEvents(true);
   };
 
   const handleEventPress = (event: EventData) => {
@@ -296,6 +358,18 @@ const SearchScreen: React.FC<SearchScreenProps> = ({
             {searchNotice && (
               <Text style={styles.subheadline}>{searchNotice}</Text>
             )}
+            {searchProgress &&
+              events.length > 0 &&
+              searchProgress.phase !== "complete" && (
+                <View style={styles.progressRow}>
+                  <ActivityIndicator size="small" color={COLORS.primary} />
+                  <Text style={styles.subheadline}>
+                    {searchProgress.phase === "enriching"
+                      ? "おすすめの理由を準備しています"
+                      : "候補を追加しています"}
+                  </Text>
+                </View>
+              )}
             {isLoading ? (
               <View style={styles.loadingContainer}>
                 <ActivityIndicator size="large" color={COLORS.primary} />
@@ -475,6 +549,12 @@ const SearchScreen: React.FC<SearchScreenProps> = ({
 };
 
 const styles = StyleSheet.create({
+  progressRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: SPACING.sm,
+    marginBottom: SPACING.sm,
+  },
   headerRow: {
     flexDirection: "row",
     alignItems: "center",

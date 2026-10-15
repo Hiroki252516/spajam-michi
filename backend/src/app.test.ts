@@ -13,6 +13,7 @@ import type {
 } from "./database.js";
 import type { EventRecommendationService } from "./recommendation.js";
 import { RoutingUnavailableError } from "./recommendation.js";
+import { initialSearchProgress } from "./search-progress.js";
 
 const JWT_SECRET = "test-jwt-secret-that-is-at-least-32-characters";
 
@@ -156,6 +157,8 @@ describe("frontend API", () => {
           status: "queued",
           result: null,
           debugTimings: null,
+          revision: 0,
+          progress: initialSearchProgress(),
           errorCode: null,
           errorMessage: null,
           createdAt: now,
@@ -168,12 +171,22 @@ describe("frontend API", () => {
         const job = searchJobs.get(jobId);
         if (job?.userId === userId) job.status = "running";
       },
+      updateEventSearchJob: async (jobId, userId, result, progress) => {
+        const job = searchJobs.get(jobId);
+        if (job?.userId === userId && job.status === "running") {
+          job.result = structuredClone(result);
+          job.progress = { ...progress };
+          job.revision += 1;
+        }
+      },
       completeEventSearchJob: async (jobId, userId, result, debugTimings) => {
         const job = searchJobs.get(jobId);
         if (job?.userId === userId) {
           job.status = "succeeded";
           job.result = result;
           job.debugTimings = debugTimings;
+          job.revision += 1;
+          job.progress = { ...job.progress, phase: "complete" };
         }
       },
       failEventSearchJob: async (
@@ -189,6 +202,8 @@ describe("frontend API", () => {
           job.errorCode = errorCode;
           job.errorMessage = errorMessage;
           job.debugTimings = debugTimings;
+          job.revision += 1;
+          job.progress = { ...job.progress, phase: "complete" };
         }
       },
       findEventSearchJob: async (jobId, userId) => {
@@ -296,6 +311,74 @@ describe("frontend API", () => {
       recommendationReason: "徒歩圏内で関心に近いイベントです。",
     });
   });
+
+  for (const failLater of [false, true]) {
+    it(`returns owned partial snapshots before completion and preserves them after ${failLater ? "failure" : "success"}`, async () => {
+      const token = await registerAndGetToken();
+      const original = recommendationService.search.bind(recommendationService);
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let ready!: () => void;
+      const published = new Promise<void>((resolve) => {
+        ready = resolve;
+      });
+      recommendationService.search = async (input) => {
+        const result = await original(input);
+        await input.onProgress?.(result, {
+          phase: "routing",
+          processedCandidates: 1,
+          totalCandidates: 2,
+          reasonStatus: "pending",
+        });
+        ready();
+        await gate;
+        if (failLater) throw new Error("interrupted after first result");
+        return result;
+      };
+      const response = await app.request(
+        "/api/events/search?area=東京都渋谷区&latitude=35.6595&longitude=139.7004",
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      const {
+        data: { jobId },
+      } = (await response.json()) as { data: { jobId: string } };
+      await published;
+      const partial = await (
+        await app.request(`/api/events/search/jobs/${jobId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+      ).json();
+      assert.equal(partial.data.status, "running");
+      assert.equal(partial.data.revision, 1);
+      assert.equal(partial.data.progress.processedCandidates, 1);
+      assert.ok(partial.data.events.length > 0);
+      assert.ok(
+        partial.data.events.every(
+          (event: Record<string, unknown>) => !("name" in event),
+        ),
+      );
+      const owner = searchJobs.get(jobId)!.userId;
+      searchJobs.get(jobId)!.userId = "another-user";
+      assert.equal(
+        (
+          await app.request(`/api/events/search/jobs/${jobId}`, {
+            headers: { Authorization: `Bearer ${token}` },
+          })
+        ).status,
+        404,
+      );
+      searchJobs.get(jobId)!.userId = owner;
+      release();
+      const terminal = (await pollSearchJob(token, jobId)) as {
+        data: { status: string; revision: number; events: unknown[] };
+      };
+      assert.equal(terminal.data.status, failLater ? "failed" : "succeeded");
+      assert.ok(terminal.data.revision > partial.data.revision);
+      assert.deepEqual(terminal.data.events, partial.data.events);
+    });
+  }
 
   it("requires authentication before calling recommendation dependencies", async () => {
     const response = await app.request(

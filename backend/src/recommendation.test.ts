@@ -20,6 +20,107 @@ import {
 import { SearchTimingCollector } from "./search-timing.js";
 
 describe("local LLM recommendation service", () => {
+  it("publishes confirmed routes before slow routes and reasons, preserving completion order", async () => {
+    const now = new Date();
+    const discovered = [
+      discoveredEvent("evt-a", "音楽フェス", now, 35.66, 139.7),
+      discoveredEvent("evt-b", "苦手な展示", now, 35.67, 139.71),
+    ];
+    let releaseRoute!: () => void;
+    const routeGate = new Promise<void>((resolve) => {
+      releaseRoute = resolve;
+    });
+    let firstReady!: () => void;
+    const first = new Promise<void>((resolve) => {
+      firstReady = resolve;
+    });
+    let releaseReasons!: () => void;
+    const reasonGate = new Promise<void>((resolve) => {
+      releaseReasons = resolve;
+    });
+    let reasonsStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      reasonsStarted = resolve;
+    });
+    const snapshots: { ids: string[]; reasons: string[]; phase: string }[] = [];
+    const stub = ollamaFetchStub();
+    const service = testService(
+      {
+        getDiscoveryCache: async () => ({
+          payload: discovered,
+          expiresAt: new Date(Date.now() + 60_000),
+        }),
+      },
+      {
+        routes: {
+          computeRoutes: async (
+            _origin,
+            _destinations,
+            _departure,
+            _signal,
+            _timings,
+            onCompleted,
+          ) => {
+            const routes = [0, 1].map((destinationIndex) => ({
+              destinationIndex,
+              travelMode: "TRANSIT" as const,
+              durationSeconds: destinationIndex ? 1800 : 600,
+              distanceMeters: 1000,
+            }));
+            await onCompleted?.(1, routes[1]!, false);
+            firstReady();
+            await routeGate;
+            await onCompleted?.(0, routes[0]!, false);
+            return routes;
+          },
+        },
+        ollama: new OllamaClient(
+          "http://127.0.0.1:11434",
+          "gemma4:e2b",
+          "embeddinggemma:300m-qat-q4_0",
+          async (url, init) => {
+            if (String(url).includes("/api/chat")) {
+              reasonsStarted();
+              await reasonGate;
+            }
+            return stub(url, init);
+          },
+        ),
+      },
+    );
+    const pending = service.search({
+      ...searchInput(),
+      onProgress: async (result, progress) => {
+        snapshots.push({
+          ids: result.events.map((e) => e.id),
+          reasons: result.events.map((e) => e.recommendationReason),
+          phase: progress.phase,
+        });
+      },
+    });
+    await first;
+    assert.deepEqual(snapshots.at(-1)?.ids, ["evt-b"]);
+    assert.equal(snapshots.at(-1)?.phase, "routing");
+    releaseRoute();
+    await started;
+    assert.deepEqual(snapshots.at(-1)?.ids, ["evt-b", "evt-a"]);
+    assert.ok(
+      snapshots
+        .at(-1)
+        ?.reasons.every((reason) => reason.startsWith("Transit API")),
+    );
+    releaseReasons();
+    const result = await pending;
+    assert.deepEqual(
+      result.events.map((e) => e.id),
+      ["evt-b", "evt-a"],
+    );
+    assert.equal(
+      result.events[1]?.recommendationReason,
+      "高評価した音楽の好みに近いイベントです。",
+    );
+    assert.equal(snapshots.at(-1)?.phase, "complete");
+  });
   it("formats route duration and fares without guessing unknown transit fares", () => {
     const baseRoute = {
       destinationIndex: 0,

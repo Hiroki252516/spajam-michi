@@ -50,7 +50,18 @@ GET /api/events/search/jobs/search-...
 Authorization: Bearer <token>
 ```
 
-状態は`queued`、`running`、`succeeded`、`failed`のいずれかです。`succeeded`では`events`、`total`、`meta`を返します。`failed`では`error.code`と`error.message`を返します。ジョブは30分で失効し、他ユーザーのジョブは取得できません。
+状態は`queued`、`running`、`succeeded`、`failed`のいずれかです。`running`でも確認済み候補ができ次第、`events`、`total`、`meta`を返します。`total`はその時点で確認できた件数です。`failed`では`error.code`と`error.message`に加え、保存済みの途中結果を返します。ジョブは30分で失効し、他ユーザーのジョブは取得できません。
+
+- `revision`は保存ごとに増える更新番号です。古い番号の応答は画面に反映しません。
+- `progress`は`phase`（`discovering` / `routing` / `enriching` / `complete`）、`processedCandidates`、`totalCandidates`、`reasonStatus`（`pending` / `generating` / `completed` / `failed`）を返します。
+- フロントエンドは1秒間隔で途中結果を取得し、最初の候補から操作できます。確認された順に追加し、後の順位付けや理由の更新でカードを並べ直しません。通信切断・135秒の待ち時間超過でも取得済み候補を保持します。
+- 最初は移動時間に基づく定型の理由を表示します。Gemmaによる理由をバッチ単位で後から更新し、その処理終了までジョブは`running`です。旧クライアントも従来どおり最終結果を取得できます。
+
+### 経路の短時間キャッシュ
+
+Transit APIの成功した経路だけを、バックエンドのメモリに最大1,000件保存します。有効期間は検索に使用した出発時刻から3分で、参照しても延長しません。前の出発地点から30m以内、同じ会場座標・日本時間の日付・API設定・検索条件で出発時刻の差が3分以内なら、最寄り駅取得と経路API呼出しを省略します。APIエラー・経路なしは保存しません。
+
+候補の`routeCached`と`routeCalculatedAt`で使用状況・計算時刻を示し、`meta.routeCache`に`hits`と`misses`を返します。画面は再利用した経路の計算時刻を表示します。距離と開催・到着条件は今回の現在地・現在時刻で再確認します。経路の所要時間・運賃は最大3分前、30m以内の地点で取得したものです。再起動でキャッシュは消えます。
 
 検索結果ではイベント名を公開せず、最寄り駅などの周辺エリアと移動条件を返します。
 
@@ -136,7 +147,7 @@ Authorization: Bearer <token>
 
 対象工程は`duckDuckGoSearch`、`eventPageFetch`、`gemmaAnalysis`、`gsiGeocoding`、`transitRouting`、`ragRecommendation`の6種類です。`transitRouting.breakdown`では経路取得を`routePlan`、周辺駅・停留所取得を`nearbyStationLookup`として確認できます。`wallMs`は並列呼出しを含む実際の待ち時間、`cumulativeMs`は個々の呼出し時間の合計なので、並列処理では後者が大きくなる場合があります。キャッシュヒットや候補なしで未実行の工程は`skipped`と`skipReason`を返します。
 
-デバッグ有効時は同じ集計を`event_search_stage_timing`と`event_search_timing_summary`のJSONログにも出力します。ログとAPIには正確な現在地、イベントURL、検索語、レビュー原文を含めません。計測値は検索ジョブと同じ30分で削除され、推薦ログには保存されません。
+デバッグ有効時は同じ集計を`event_search_stage_timing`と`event_search_timing_summary`のJSONログにも出力します。`firstResultMs`は最初の候補を保存するまで、`totalMs`は理由生成を含む最終完了までの時間です。`transitRouting.breakdown.routeCacheLookup`でキャッシュ参照時間を確認できます。計測項目と計測ログには正確な現在地、イベントURL、検索語、レビュー原文を含めません。計測値は検索ジョブと同じ30分で削除され、推薦ログには保存されません。
 
 ## 環境変数
 
@@ -169,7 +180,7 @@ RUN_LOCAL_LLM_TESTS=1 npm test -w backend
 
 - Ollamaのチャット生成には`num_predict`を設定します。通常の構造化抽出は最大1024トークン、検索ツール呼び出しと嗜好タグ抽出は最大256トークンです。既定のリクエスト上限15秒、検索・抽出75秒、検索全体120秒も維持します。
 - 生成用JSONスキーマは受信時に使うZodスキーマから作成し、文字数・配列件数・必須項目の制限を一致させます。トークン上限で打ち切られた出力、不完全なJSON、コードブロック・制御トークン・繰り返しを含む文章は採用しません。
-- 推薦理由は候補3件ずつ、最大512トークンで生成します。候補IDを固定したオブジェクト形式を使用し、未知のIDや120文字を超える理由を拒否します。推薦理由の生成工程全体にも15秒の上限を設けます。
+- 推薦理由は候補を途中結果に保存した後、候補3件ずつ、最大512トークンで生成します。候補IDを固定したオブジェクト形式を使用し、未知のIDや120文字を超える理由、隠しているイベント名を含む理由を拒否します。推薦理由の生成工程全体にも15秒の上限を設けます。
 - 説明の生成が失敗しても確認済みイベントは返します。失敗した候補の理由だけ、Transit APIで確認した移動時間に基づく定型文へ切り替え、`meta.degradedReasons`に`recommendation_reason_unavailable`を記録します。成功済みの候補の理由は保持します。
 - イベント抽出のLLM出力は1ページ最大4件、タグ8件以内です。出典の住所・日時の照合は継続します。検索計画はモデル応答・ツール実行とも最大3回とし、検索結果が得られた時点で終了します。
 - 抽出・推薦理由の失敗は`ollama_output_limit`、`ollama_invalid_json`、`ollama_invalid_structure`、`ollama_invalid_text`、`ollama_request_timeout`などで区別します。ログにはモデルの出力原文を残さず、理由と出典ホスト名を記録します。
@@ -180,6 +191,6 @@ RUN_LOCAL_LLM_TESTS=1 npm test -w backend
 - Transit APIへは経路検索のため現在地と確認済み会場の緯度・経度を送り、最寄り駅取得には会場の緯度・経度を送ります。
 - 国土地理院の住所検索へは、公開されたイベント出典ページに記載された会場住所だけを送ります。利用時は国土地理院コンテンツ利用規約と出典表示要件に従ってください。
 - ユーザー名、メールアドレス、電話番号、レビュー原文はDuckDuckGo、国土地理院、Transit APIへ送信しません。
-- 正確な現在地は検索処理中のメモリだけで扱い、検索ジョブ、検索キャッシュ、推薦ログ、イベント履歴には保存しません。
+- 正確な現在地は検索処理と最大3分の経路キャッシュ用メモリだけで扱い、DBの検索ジョブ、イベント検索キャッシュ、推薦ログ、イベント履歴には保存しません。
 - DuckDuckGo HTML検索は非公式連携のためブロックや応答形式の変更が起こり得ます。ページに裏づけられない会場・時刻をLLMに補わせず、障害時は確認済み保存データまたは理由付きの0件を返します。
-- 非同期ジョブはバックエンド内で実行します。処理中にプロセスが再起動したジョブは`SEARCH_INTERRUPTED`で失敗となり、再検索が必要です。
+- 非同期ジョブはバックエンド内で実行します。処理中にプロセスが再起動したジョブは`SEARCH_INTERRUPTED`で失敗となりますが、DBに保存済みの途中結果は取得できます。更新を続けるには再検索が必要です。

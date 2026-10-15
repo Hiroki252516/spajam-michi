@@ -33,6 +33,7 @@ export type SearchDebugTimings = {
   version: 1;
   unit: "ms";
   totalMs: number;
+  firstResultMs?: number;
   stages: Record<SearchTimingStage, SearchTimingStageSummary>;
 };
 
@@ -50,6 +51,7 @@ export class SearchTimingCollector {
   private readonly records = new Map<SearchTimingStage, TimingRecord[]>();
   private readonly skipReasons = new Map<SearchTimingStage, string>();
   private readonly loggedStages = new Set<SearchTimingStage>();
+  private firstResultMs?: number;
 
   constructor(
     private readonly jobId: string,
@@ -86,10 +88,17 @@ export class SearchTimingCollector {
       version: 1,
       unit: "ms",
       totalMs: milliseconds(this.now() - this.startedAt),
+      ...(this.firstResultMs !== undefined
+        ? { firstResultMs: this.firstResultMs }
+        : {}),
       stages: Object.fromEntries(
         SEARCH_TIMING_STAGES.map((stage) => [stage, this.stageSummary(stage)]),
       ) as Record<SearchTimingStage, SearchTimingStageSummary>,
     };
+  }
+
+  markFirstResult() {
+    this.firstResultMs ??= milliseconds(this.now() - this.startedAt);
   }
 
   logStages(stages: SearchTimingStage[]) {

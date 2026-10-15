@@ -13,6 +13,7 @@ export type ReasonCandidate = {
   travelMinutes: number;
   travelMode: TravelMode;
   preferenceScore: number;
+  hiddenName?: string;
 };
 
 /** Bound both the request size and total time spent on optional explanations. */
@@ -22,6 +23,7 @@ export async function generateRecommendationReasons(input: {
   preferenceKeywords: string[];
   signal?: AbortSignal;
   onFailure: (error: unknown) => void;
+  onBatch?: (reasons: Map<string, string>) => Promise<void>;
 }) {
   const reasons = new Map<string, string>();
   if (!input.candidates.length) return reasons;
@@ -53,7 +55,10 @@ export async function generateRecommendationReasons(input: {
           user: JSON.stringify({
             preferenceKeywords: input.preferenceKeywords.slice(0, 6),
             events: batch.map((event) => ({
-              ...event,
+              eventId: event.eventId,
+              travelMinutes: event.travelMinutes,
+              travelMode: event.travelMode,
+              preferenceScore: event.preferenceScore,
               description: event.description.slice(0, 240),
             })),
           }),
@@ -64,13 +69,27 @@ export async function generateRecommendationReasons(input: {
       );
       for (const candidate of batch) {
         const text = result.reasons[candidate.eventId]!;
-        if (isCleanRecommendationReason(text))
+        if (
+          isCleanRecommendationReason(text) &&
+          !revealsEventName(text, candidate.hiddenName)
+        )
           reasons.set(candidate.eventId, text.trim());
         else input.onFailure(new OllamaOutputError("invalid_text"));
       }
     } catch (error) {
       input.onFailure(error);
     }
+    await input.onBatch?.(new Map(reasons));
   }
   return reasons;
+}
+
+function revealsEventName(text: string, hiddenName?: string) {
+  const normalize = (value: string) =>
+    value
+      .normalize("NFKC")
+      .toLowerCase()
+      .replace(/[\s\p{P}\p{S}]/gu, "");
+  const name = normalize(hiddenName ?? "");
+  return name.length > 0 && normalize(text).includes(name);
 }

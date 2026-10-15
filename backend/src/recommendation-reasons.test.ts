@@ -24,6 +24,35 @@ const client = (implementation: typeof fetch) =>
   );
 
 describe("bounded recommendation reasons", () => {
+  it("rejects reasons that disclose the hidden event name and does not send the name as a field", async () => {
+    const failures: unknown[] = [];
+    const batches: Map<string, string>[] = [];
+    const result = await generateRecommendationReasons({
+      ollama: client(async (_url, init) => {
+        const body = JSON.parse(String(init?.body));
+        assert.equal(
+          JSON.parse(body.messages[1].content).events[0].hiddenName,
+          undefined,
+        );
+        return Response.json({
+          message: {
+            content: JSON.stringify({
+              reasons: { a: "音楽フェスが好きな方におすすめです。" },
+            }),
+          },
+        });
+      }),
+      candidates: [{ ...candidate("a"), hiddenName: "音楽フェス" }],
+      preferenceKeywords: [],
+      onFailure: (error) => failures.push(error),
+      onBatch: async (reasons) => {
+        batches.push(reasons);
+      },
+    });
+    assert.equal(result.size, 0);
+    assert.equal(failures.length, 1);
+    assert.equal(batches.length, 1);
+  });
   it("batches three candidates and constrains text and IDs during generation", async () => {
     const batches: string[][] = [];
     const failures: unknown[] = [];

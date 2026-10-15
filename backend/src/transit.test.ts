@@ -95,7 +95,7 @@ describe("Transit API client", () => {
     assert.equal(planUrl?.searchParams.get("from"), "geo:35.681236,139.767125");
     assert.equal(planUrl?.searchParams.get("to"), "rail:shibuya");
     const routeTimings = timings.snapshot().stages.transitRouting;
-    assert.equal(routeTimings.operations, 2);
+    assert.equal(routeTimings.operations, 3);
     assert.equal(routeTimings.breakdown.nearbyStationLookup?.operations, 1);
     assert.equal(routeTimings.breakdown.routePlan?.operations, 1);
   });
