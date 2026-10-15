@@ -13,6 +13,7 @@ import {
   type EventRecommendationService,
 } from "./recommendation.js";
 import { SearchTimingCollector } from "./search-timing.js";
+import { initialSearchProgress } from "./search-progress.js";
 
 const ARRIVAL_VERIFICATION_DISTANCE_METERS = 100;
 
@@ -151,18 +152,27 @@ export function createApp(
         "検索ジョブが見つからないか、有効期限が切れています。",
       );
     }
+    const result = job.result as EventSearchResult | null;
+    const partial = {
+      jobId: job.id,
+      status: job.status,
+      revision: job.revision ?? 0,
+      progress: job.progress ?? initialSearchProgress(),
+      ...(result
+        ? {
+            events: result.events.map(toEventSummary),
+            total: result.total,
+            limit: job.limit,
+            offset: job.offset,
+            meta: result.meta,
+          }
+        : {}),
+    };
     if (job.status === "succeeded") {
-      const result = job.result as EventSearchResult;
       return context.json({
         status: "success",
         data: {
-          jobId: job.id,
-          status: job.status,
-          events: result.events.map(toEventSummary),
-          total: result.total,
-          limit: job.limit,
-          offset: job.offset,
-          meta: result.meta,
+          ...partial,
         },
       });
     }
@@ -170,8 +180,7 @@ export function createApp(
       return context.json({
         status: "success",
         data: {
-          jobId: job.id,
-          status: job.status,
+          ...partial,
           error: {
             code: job.errorCode ?? "EVENT_SEARCH_FAILED",
             message: job.errorMessage ?? "イベント検索を完了できませんでした。",
@@ -184,7 +193,7 @@ export function createApp(
     }
     return context.json({
       status: "success",
-      data: { jobId: job.id, status: job.status },
+      data: partial,
     });
   });
 
@@ -400,6 +409,7 @@ async function runEventSearchJob(input: {
   const timings = input.debugRequested
     ? new SearchTimingCollector(input.jobId)
     : undefined;
+  let writes = Promise.resolve();
   try {
     await input.database.markEventSearchJobRunning(input.jobId, input.userId);
     const result = await input.recommendationService.search({
@@ -411,7 +421,21 @@ async function runEventSearchJob(input: {
       limit: input.limit,
       offset: input.offset,
       timings,
+      onProgress: (result, progress) => {
+        const write = writes.then(async () => {
+          await input.database.updateEventSearchJob(
+            input.jobId,
+            input.userId,
+            result,
+            progress,
+          );
+          if (result.events.length) timings?.markFirstResult();
+        });
+        writes = write.catch(() => {});
+        return write;
+      },
     });
+    await writes;
     const debugTimings = timings?.snapshot() ?? null;
     if (debugTimings) {
       result.meta.debugTimings = debugTimings;
@@ -424,6 +448,7 @@ async function runEventSearchJob(input: {
       debugTimings,
     );
   } catch (error) {
+    await writes;
     let errorCode = "EVENT_SEARCH_FAILED";
     let errorMessage = "イベント検索を完了できませんでした。";
     if (error instanceof RoutingUnavailableError) {
@@ -496,6 +521,8 @@ function toEventSummary(event: EventRow) {
           travelMode: event.travelMode,
           travelDurationMinutes: event.travelDurationMinutes,
           recommendationReason: event.recommendationReason,
+          routeCached: event.routeCached,
+          routeCalculatedAt: event.routeCalculatedAt,
         }
       : {}),
   };
@@ -508,6 +535,8 @@ function isRecommendedEvent(event: EventRow): event is EventRow & {
   travelMode: "TRANSIT" | "WALK";
   travelDurationMinutes: number;
   recommendationReason: string;
+  routeCached?: boolean;
+  routeCalculatedAt?: string;
 } {
   return "travelMode" in event;
 }

@@ -30,6 +30,10 @@ import {
 import { GsiGeocoder, type Coordinates } from "./geocoding.js";
 import { OllamaClient, ollamaFailureReason } from "./ollama.js";
 import { generateRecommendationReasons } from "./recommendation-reasons.js";
+import {
+  initialSearchProgress,
+  type SearchProgress,
+} from "./search-progress.js";
 import { fetchPublicHtml } from "./safe-fetch.js";
 import {
   measureSearchTiming,
@@ -41,6 +45,7 @@ import {
   TransitApiError,
   type TransitRoute,
   type TravelMode,
+  type RouteCompletion,
 } from "./transit.js";
 
 const MAX_EVENT_PAGES_PER_SEARCH = 4;
@@ -54,6 +59,8 @@ export type RecommendedEvent = EventRow & {
   travelMode: TravelMode;
   travelDurationMinutes: number;
   recommendationReason: string;
+  routeCached?: boolean;
+  routeCalculatedAt?: string;
 };
 
 export type EventSearchResult = {
@@ -69,6 +76,7 @@ export type EventSearchResult = {
     degradedReasons: string[];
     travelAdvisory: string;
     debugTimings?: SearchDebugTimings;
+    routeCache?: { hits: number; misses: number };
   };
 };
 
@@ -82,6 +90,10 @@ export interface EventRecommendationService {
     limit: number;
     offset: number;
     timings?: SearchTimingCollector;
+    onProgress?: (
+      result: EventSearchResult,
+      progress: SearchProgress,
+    ) => Promise<void>;
   }): Promise<EventSearchResult>;
   indexReview(
     review: ReviewRow,
@@ -122,6 +134,7 @@ export interface RouteProvider {
     departureAt: Date,
     signal?: AbortSignal,
     timings?: SearchTimingCollector,
+    onCompleted?: RouteCompletion,
   ): Promise<(TransitRoute | null)[]>;
   resolveNearbyAreas?(
     destinations: Coordinates[],
@@ -184,6 +197,10 @@ export class LocalLlmRecommendationService implements EventRecommendationService
     limit: number;
     offset: number;
     timings?: SearchTimingCollector;
+    onProgress?: (
+      result: EventSearchResult,
+      progress: SearchProgress,
+    ) => Promise<void>;
   }) {
     const signal = AbortSignal.timeout(this.searchTimeoutMs);
     const discoverySignal = AbortSignal.any([
@@ -196,6 +213,38 @@ export class LocalLlmRecommendationService implements EventRecommendationService
     const bounds = tokyoDayBounds(now);
     const degradedReasons: string[] = [];
     const origin = { latitude: input.latitude, longitude: input.longitude };
+    let source: EventSearchResult["meta"]["source"] = "live";
+    let personalized = false;
+    const ready: { event: EventRow; route: TransitRoute }[] = [];
+    const reasons = new Map<string, string>();
+    const progress = initialSearchProgress();
+    const routeCache = { hits: 0, misses: 0 };
+    const snapshot = (): EventSearchResult => {
+      const checkedAt = new Date();
+      const allEvents = ready
+        .filter(({ event, route }) => canRecommend(event, route, checkedAt))
+        .map(({ event, route }) =>
+          recommendedEvent(event, route, reasons.get(event.id)),
+        );
+      return {
+        events: allEvents.slice(input.offset, input.offset + input.limit),
+        total: allEvents.length,
+        meta: {
+          personalized,
+          source,
+          generatedAt: checkedAt.toISOString(),
+          routingProvider: "transit_api",
+          geocodingProvider: "gsi",
+          currentLocationProvider: "device_geocoder",
+          degradedReasons: [...new Set(degradedReasons)],
+          routeCache: { ...routeCache },
+          travelAdvisory:
+            "乗換所要時間はTransit APIの旅程を使用します。会場最寄り駅から会場までの徒歩は、直線距離に基づく概算を所要時間に加算します。",
+        },
+      };
+    };
+    const publish = async () => input.onProgress?.(snapshot(), { ...progress });
+    await publish();
     const memories = await measureSearchTiming(
       input.timings,
       "ragRecommendation",
@@ -203,8 +252,6 @@ export class LocalLlmRecommendationService implements EventRecommendationService
       () => this.backfillAndLoadMemories(input.userId, signal),
     );
     const preferenceKeywords = preferredKeywords(memories);
-    let source: EventSearchResult["meta"]["source"] = "live";
-    const currentLocationProvider = "device_geocoder" as const;
 
     let events: EventRow[] = [];
     if (area) {
@@ -249,6 +296,9 @@ export class LocalLlmRecommendationService implements EventRecommendationService
             candidateTime.getTime(),
       ),
     ).slice(0, 20);
+    progress.phase = "routing";
+    progress.totalCandidates = candidates.length;
+    await publish();
     if (candidates.length === 0) {
       input.timings?.skip("transitRouting", "no_candidates");
     }
@@ -260,6 +310,30 @@ export class LocalLlmRecommendationService implements EventRecommendationService
     ]);
     let routes: (TransitRoute | null)[];
     const departureAt = new Date();
+    const handled = new Set<number>();
+    let updates = Promise.resolve();
+    const onCompleted: RouteCompletion = (index, route, failed) => {
+      const update = updates.then(async () => {
+        if (handled.has(index)) return;
+        handled.add(index);
+        progress.processedCandidates += 1;
+        if (route?.routeCached) routeCache.hits += 1;
+        else routeCache.misses += 1;
+        if (failed) degradedReasons.push("route_plan_unavailable");
+        const event = candidates[index];
+        if (event && route && canRecommend(event, route, new Date())) {
+          const [enriched] = await this.attachSpotNames(
+            [event],
+            [route],
+            degradedReasons,
+          );
+          ready.push({ event: enriched!, route });
+        }
+        await publish();
+      });
+      updates = update.catch(() => {});
+      return update;
+    };
     try {
       routes = await this.routes.computeRoutes(
         origin,
@@ -270,6 +344,7 @@ export class LocalLlmRecommendationService implements EventRecommendationService
         departureAt,
         signal,
         input.timings,
+        onCompleted,
       );
     } catch (error) {
       input.timings?.logStages(["transitRouting"]);
@@ -278,24 +353,16 @@ export class LocalLlmRecommendationService implements EventRecommendationService
       }
       throw error;
     }
-    const enrichedCandidates = await this.attachSpotNames(
-      candidates,
-      routes,
-      degradedReasons,
-    );
+    // Providers without completion notifications remain compatible.
+    for (let index = 0; index < routes.length; index += 1) {
+      if (!handled.has(index)) await onCompleted(index, routes[index]!, false);
+    }
+    await updates;
     input.timings?.logStages(["transitRouting"]);
 
-    const routable = enrichedCandidates.flatMap((event, index) => {
-      const route = routes[index];
-      const close = closingTime(event, departureAt) ?? event.endsAt;
-      return route &&
-        route.durationSeconds <= 3_600 &&
-        (!close ||
-          departureAt.getTime() + route.durationSeconds * 1000 <
-            close.getTime())
-        ? [{ event, route }]
-        : [];
-    });
+    const routable = ready.filter(({ event, route }) =>
+      canRecommend(event, route, new Date()),
+    );
     console.info("Event search routing completed", {
       activeCandidateCount: candidates.length,
       routesFoundCount: routes.filter((route) => route !== null).length,
@@ -303,6 +370,8 @@ export class LocalLlmRecommendationService implements EventRecommendationService
     });
     if (candidates.length === 0) degradedReasons.push("no_verified_events");
     else if (routable.length === 0) degradedReasons.push("no_reachable_events");
+    progress.phase = "enriching";
+    await publish();
     const ranked = await measureSearchTiming(
       input.timings,
       "ragRecommendation",
@@ -322,7 +391,10 @@ export class LocalLlmRecommendationService implements EventRecommendationService
       routableCount: routable.length,
       rankedCount: ranked.length,
     });
-    const reasons = await measureSearchTiming(
+    personalized = ranked.some((candidate) => candidate.memories.length > 0);
+    progress.reasonStatus = ranked.length ? "generating" : "completed";
+    await publish();
+    await measureSearchTiming(
       input.timings,
       "ragRecommendation",
       "recommendationReasonGeneration",
@@ -332,24 +404,13 @@ export class LocalLlmRecommendationService implements EventRecommendationService
           preferenceKeywords,
           signal,
           degradedReasons,
+          async (batch) => {
+            for (const [id, reason] of batch) reasons.set(id, reason);
+            await publish();
+          },
         ),
     );
     input.timings?.logStages(["ragRecommendation"]);
-    const personalized = ranked.some(
-      (candidate) => candidate.memories.length > 0,
-    );
-    const allEvents = ranked.map((candidate) => ({
-      ...candidate.event,
-      distance: formatDistance(candidate.route.distanceMeters),
-      spotName: candidate.event.spotName ?? "周辺エリア情報なし",
-      duration: formatRouteDuration(candidate.route),
-      cost: formatTravelCost(candidate.route),
-      sourceUrl: candidate.event.sourceUrl,
-      travelMode: candidate.route.travelMode,
-      travelDurationMinutes: Math.ceil(candidate.route.durationSeconds / 60),
-      recommendationReason:
-        reasons.get(candidate.event.id) ?? fallbackReason(candidate),
-    }));
     try {
       await this.store.recordRecommendationLog({
         id: `rec_${randomUUID()}`,
@@ -372,21 +433,14 @@ export class LocalLlmRecommendationService implements EventRecommendationService
       degradedReasons.push("recommendation_log_unavailable");
       console.warn("Recommendation log persistence failed", error);
     }
-    return {
-      events: allEvents.slice(input.offset, input.offset + input.limit),
-      total: allEvents.length,
-      meta: {
-        personalized,
-        source,
-        generatedAt: new Date().toISOString(),
-        routingProvider: "transit_api" as const,
-        geocodingProvider: "gsi" as const,
-        currentLocationProvider,
-        degradedReasons: [...new Set(degradedReasons)],
-        travelAdvisory:
-          "乗換所要時間はTransit APIの旅程を使用します。会場最寄り駅から会場までの徒歩は、直線距離に基づく概算を所要時間に加算します。",
-      },
-    };
+    progress.phase = "complete";
+    progress.reasonStatus = degradedReasons.includes(
+      "recommendation_reason_unavailable",
+    )
+      ? "failed"
+      : "completed";
+    await publish();
+    return snapshot();
   }
 
   async indexReview(review: ReviewRow, event: EventRow & { tags: string[] }) {
@@ -709,6 +763,7 @@ export class LocalLlmRecommendationService implements EventRecommendationService
     signal: AbortSignal,
     degradedReasons: string[],
   ) {
+    if (!candidates.length) return [];
     const texts = [
       query,
       ...candidates.map(({ event }) => eventEmbeddingText(event)),
@@ -793,11 +848,13 @@ export class LocalLlmRecommendationService implements EventRecommendationService
     preferenceKeywords: string[],
     signal: AbortSignal,
     degradedReasons: string[],
+    onBatch: (reasons: Map<string, string>) => Promise<void>,
   ) {
     return generateRecommendationReasons({
       ollama: this.ollama,
       candidates: candidates.map((candidate) => ({
         eventId: candidate.event.id,
+        hiddenName: candidate.event.name,
         description: candidate.event.description,
         travelMinutes: Math.ceil(candidate.route.durationSeconds / 60),
         travelMode: candidate.route.travelMode,
@@ -805,6 +862,7 @@ export class LocalLlmRecommendationService implements EventRecommendationService
       })),
       preferenceKeywords,
       signal,
+      onBatch,
       onFailure: (error) => {
         degradedReasons.push("recommendation_reason_unavailable");
         degradedReasons.push(ollamaFailureReason(error));
@@ -1026,7 +1084,37 @@ export function formatTravelCost(route: TransitRoute) {
   return `${price}（${usesIc ? "IC" : "きっぷ"}）`;
 }
 
-function fallbackReason(candidate: RankedCandidate) {
-  const minutes = Math.ceil(candidate.route.durationSeconds / 60);
+function fallbackReason(route: TransitRoute) {
+  const minutes = Math.ceil(route.durationSeconds / 60);
   return `Transit APIの最短旅程で約${minutes}分、当日参加できるイベントです。`;
+}
+
+function canRecommend(event: EventRow, route: TransitRoute, now: Date) {
+  const close = closingTime(event, now) ?? event.endsAt;
+  return (
+    verifiedVenue(event, now) &&
+    isActiveToday(event, now, tokyoDayBounds(now)) &&
+    route.durationSeconds <= 3_600 &&
+    (!close || now.getTime() + route.durationSeconds * 1000 < close.getTime())
+  );
+}
+
+function recommendedEvent(
+  event: EventRow,
+  route: TransitRoute,
+  reason?: string,
+): RecommendedEvent {
+  return {
+    ...event,
+    distance: formatDistance(route.distanceMeters),
+    spotName: event.spotName ?? "周辺エリア情報なし",
+    duration: formatRouteDuration(route),
+    cost: formatTravelCost(route),
+    sourceUrl: event.sourceUrl,
+    travelMode: route.travelMode,
+    travelDurationMinutes: Math.ceil(route.durationSeconds / 60),
+    recommendationReason: reason ?? fallbackReason(route),
+    routeCached: route.routeCached ?? false,
+    routeCalculatedAt: route.routeCalculatedAt,
+  };
 }

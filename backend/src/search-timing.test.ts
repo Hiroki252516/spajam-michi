@@ -4,6 +4,20 @@ import { describe, it } from "node:test";
 import { SearchTimingCollector } from "./search-timing.js";
 
 describe("search timing collector", () => {
+  it("records the first persisted result once, independently of final completion", () => {
+    let now = 0;
+    const collector = new SearchTimingCollector(
+      "job-first",
+      () => now,
+      () => {},
+    );
+    now = 1200;
+    collector.markFirstResult();
+    now = 64000;
+    collector.markFirstResult();
+    assert.equal(collector.snapshot().firstResultMs, 1200);
+    assert.equal(collector.snapshot().totalMs, 64000);
+  });
   it("separates wall time from cumulative time for overlapping operations", async () => {
     let now = 0;
     const pending: (() => void)[] = [];
